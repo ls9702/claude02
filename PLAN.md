@@ -60,14 +60,21 @@
 
 ## 6. 하드웨어 확정에 따른 계획 수정 (2026-09)
 
-**확정된 환경: 시놀로지 1베이 최저가형 (DS120j: RAM 512MB / DS124: RAM 1GB, 모두 ARMv8), 동시 사용자 5명 이하.**
+**확정된 환경: Synology DS118 — Realtek RTD1296(ARMv8, 쿼드 A53 1.4GHz), RAM 1GB, DSM 7.0.1-42218 Update 6. 동시 사용자 5명 이하.**
 
 ### 제약 분석
-- Container Manager(도커)는 2023년부터 DS120j/DS124 등 j·밸류 시리즈도 공식 지원됨 → 도커 자체는 가능.
-- 그러나 **RAM이 결정적 제약**: DSM 자체가 300~400MB를 쓰므로,
-  - DS120j(512MB): 컨테이너에 쓸 수 있는 여유가 100~150MB 수준. 초경량 스택만 간신히 가능.
-  - DS124(1GB): 여유 500~600MB. 경량 스택은 안정적으로 가능.
-- **CPU가 ARM64**이므로 arm64 도커 이미지가 필요. ExcaliDash는 arm64 공식 이미지가 확인되지 않고 SQLite+Node 백엔드로 이 램 예산에는 부담 → **이 하드웨어에서는 ExcaliDash(기존 1안) 대신 경량 스택으로 변경**.
+- **DS118은 Container Manager(도커) 공식 지원 목록에 없음.** 단, 동일 CPU(RTD1296)의 지원 모델용 패키지를 설치해주는 검증된 커뮤니티 스크립트([007revad/ContainerManager_for_all_armv8](https://github.com/007revad/ContainerManager_for_all_armv8))가 있고 DS118이 지원 모델로 명시돼 있음. DSM 7.2 이상 필요.
+- **현재 DSM 7.0.1 → 7.2+로 업데이트 선행 필요** (DS118은 DSM 7.2 지원 모델).
+- **RAM 1GB**: DSM이 300~400MB를 쓰므로 컨테이너 여유는 500~600MB. 경량 스택은 안정적으로 가능하나 ExcaliDash(Node 백엔드+SQLite)는 부담 → **경량 스택으로 확정**.
+- **arm64 이미지 필요**: Excalidraw 프론트는 자체 크로스 빌드, excalidraw-room·nginx는 arm64 이미지 존재.
+- **QuickConnect는 사용 불가** (커스텀 포트/WebSocket 미지원) → 외부 접속은 DDNS+포트포워딩+Let's Encrypt 또는 Tailscale로.
+
+### 사전 작업 (도커 활성화)
+1. DSM 7.0.1 → 7.2+ 업데이트 (제어판 → 업데이트 및 복원. 업데이트 전 설정 백업 권장)
+2. 007revad 스크립트 실행(SSH)으로 Container Manager 설치
+3. 패키지 센터에서 Container Manager 자동 업데이트 제외 설정 (자동 업데이트 시 되돌아갈 수 있음)
+- 비고: 공식 미지원 경로이므로 리스크가 0은 아니나, 동일 CPU 지원 모델의 패키지를 그대로 쓰는 방식이라 커뮤니티에서 다수 검증됨. DSM 메이저 업데이트 시 재실행 필요할 수 있음.
+- 대안(도커 회피): Web Station 정적 호스팅 + Node.js 패키지로 excalidraw-room 직접 실행 — 가능하지만 ID/PW 인증을 붙일 방법이 마땅치 않아 비권장.
 
 ### 수정된 권장 아키텍처 (경량 스택, RAM 약 150~250MB)
 ```
@@ -87,16 +94,13 @@
   - 보완책 2: `excalidraw-storage-backend`(kiliandeca) 추가로 공유 링크/씬 서버 저장 — RAM 여유 확인 후 선택 적용 (DS124라면 가능, DS120j는 비권장)
 - (−) 계정 관리 UI 없음(htpasswd 파일 편집) — 5명 이하 소규모라 수용 가능
 
-### DS120j(512MB)인 경우의 솔직한 평가
-경량 스택도 빠듯하다. 시도는 가능하나 DSM 업데이트나 인덱싱 작업과 겹치면 스왑으로 느려질 수 있음. 이 경우 대안:
-- 프론트를 컨테이너 없이 **Web Station 정적 호스팅**으로 올리고 excalidraw-room 하나만 컨테이너로 운영 (RAM ~100MB 이내)
-- 그래도 부족하면 이 NAS에서의 실시간 협업은 무리이며, 라즈베리파이급 보조 장비나 상위 NAS 검토가 현실적
+## 7. 다음 단계 (DS118 확정)
 
-## 7. 다음 단계 (수정)
-
-1. NAS 정확한 모델명 확인 (DS120j인지 DS124인지 — RAM 512MB vs 1GB로 구성이 갈림)
-2. 접속 방식 결정: 내부망 전용 / Tailscale / 포트포워딩+Let's Encrypt
-3. Excalidraw 프론트 arm64 빌드 (PC에서 `docker buildx`로 크로스 빌드, WS 주소 주입)
-4. docker-compose 작성: nginx(Basic Auth+HTTPS) + excalidraw-room
-5. 5명 동시 접속 실사용 테스트 (이미지 붙여넣기, 펜 입력 포함)
-6. 내보내기 습관/백업 절차 정리 (서버 저장 없으므로 특히 중요)
+1. **[사용자]** DSM 7.0.1 → 7.2+ 업데이트
+2. **[사용자]** SSH 활성화 후 007revad 스크립트로 Container Manager 설치, 자동 업데이트 제외 설정
+3. 접속 방식 결정: 내부망 전용 / Tailscale / DDNS+포트포워딩+Let's Encrypt (QuickConnect는 불가)
+4. Excalidraw 프론트 arm64 빌드 (PC에서 `docker buildx`로 크로스 빌드, WS 주소 주입)
+5. docker-compose 작성: nginx(Basic Auth+HTTPS) + excalidraw-room
+6. 5명 동시 접속 실사용 테스트 (이미지 붙여넣기, 펜 입력 포함)
+7. 내보내기 습관/백업 절차 정리 (서버 저장 없으므로 특히 중요)
+8. (선택, RAM 여유 확인 후) excalidraw-storage-backend 추가로 서버 측 저장 도입 검토
