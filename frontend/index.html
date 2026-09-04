@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5" />
+    <meta name="color-scheme" content="light dark" />
+    <title>화이트보드</title>
+    <!--
+      Excalidraw 폰트 자체 호스팅.
+      scripts/copy-excalidraw-assets.mjs 가 public/excalidraw-assets/fonts 로 복사한다.
+      앱 스크립트보다 먼저 실행되어야 한다.
+    -->
+    <script>
+      window.EXCALIDRAW_ASSET_PATH = "/excalidraw-assets/";
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
