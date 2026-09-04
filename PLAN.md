@@ -17,6 +17,7 @@ Figma처럼 사진·그림·개념도를 그릴 수 있는 웹 기반 실시간 
 | 시트 엔진 | Fortune-sheet (MIT) — 수식·서식 지원, `onOp` 훅으로 자체 실시간 동기화 |
 | AI 제공자 | Google Gemini (claude01 프로젝트와 동일 키·설계) |
 | 개발 방식 | Opus 5 구현 → Sonnet 5 병렬 검증 → Opus 5 수정 → Fable 5 최종 검토 |
+| 진행 순서 | **1단계 프로토타입(로컬 PC, M1~M5) 완료 → 2단계 NAS·도메인 설정 및 배포(M6)**. NAS/도메인 작업은 프로토타입이 끝난 뒤 시작 |
 
 ---
 
@@ -178,7 +179,8 @@ Figma처럼 사진·그림·개념도를 그릴 수 있는 웹 기반 실시간 
 - **프론트엔드**: React + Vite + `@excalidraw/excalidraw` SPA, excalidraw.com 협업 코드 포팅, `@fortune-sheet/react`(시트 페이지에서만 지연 로드), SheetJS(xlsx 변환), 폰트 자체 호스팅, 빌드 시 brotli/gzip 사전 압축 (원격 사용자 체감 속도의 병목은 NAS CPU가 아니라 가정용 업로드 대역폭)
 - **백엔드**: Fastify, better-sqlite3(arm64 prebuilt; 문제 시 Node 22+ `node:sqlite`로 대체), `@fastify/static`, `@fastify/websocket`, `@fastify/rate-limit`
 - **DB 테이블**: users(ai_allowed 포함), sessions, session_members, pages(type: canvas|sheet, 룸 키·순서·썸네일), scenes(캔버스 스냅샷), sheets(시트 JSON 스냅샷), files, comments, comment_replies
-- **빌드**: 모든 이미지는 PC에서 `docker buildx --platform linux/arm64` 크로스 빌드
+- **빌드**: 모든 이미지는 PC에서 `docker buildx --platform linux/arm64` 크로스 빌드 (M6에서)
+- **프로토타입 실행 환경(1단계)**: 로컬 PC에서 `docker compose up`(app + room) 또는 `npm run dev`로 `http://localhost`에서 동작. HTTPS·도메인 없이 개발하므로 쿠키 `Secure` 플래그와 wss 주소는 환경변수로 분기(`NODE_ENV`/`PUBLIC_URL`), 배포 시에만 켠다
 
 ---
 
@@ -192,7 +194,9 @@ Figma처럼 사진·그림·개념도를 그릴 수 있는 웹 기반 실시간 
 
 ---
 
-## 5. 사전 작업 (사용자 수행)
+## 5. NAS·도메인 설정 (2단계 — 프로토타입 완료 후 사용자 수행)
+
+프로토타입(M1~M5)은 로컬 PC의 `docker compose`(또는 `npm run dev`)만으로 개발·검증하며, 아래 작업은 M6 배포 직전에 진행한다.
 
 1. DSM 7.0.1 → 7.2+ 업데이트 (설정 백업 후)
 2. SSH로 [007revad/ContainerManager_for_all_armv8](https://github.com/007revad/ContainerManager_for_all_armv8) 실행 → Container Manager 설치 (DS118 지원 명시), 패키지 자동 업데이트 제외 설정
@@ -228,6 +232,8 @@ Figma처럼 사진·그림·개념도를 그릴 수 있는 웹 기반 실시간 
 
 ## 7. 개발 마일스톤
 
+**1단계 — 프로토타입 (로컬 PC에서 개발·검증, NAS 불필요)**
+
 | 단계 | 내용 | 예상 |
 |---|---|---|
 | M1 | 백엔드 뼈대: 로그인(쿠키 유지), 사용자/세션/페이지 CRUD·할당, 파일 API / 프론트: 로그인·세션 목록·페이지 탭·캔버스 저장/불러오기, 폰트 자체 호스팅, E2E 골격 | 1주 |
@@ -235,7 +241,12 @@ Figma처럼 사진·그림·개념도를 그릴 수 있는 웹 기반 실시간 
 | M3 | 오브젝트 댓글: 핀 오버레이, 스레드, 실시간 반영 | 1주 |
 | M4 | AI 검색 카드: Gemini 프록시 라우트·퓨즈, 시트 UI, 카드 요소 생성, 업스트림 모킹 E2E | 3~4일 |
 | M5 | 시트 페이지: 페이지 타입 분기, Fortune-sheet 래퍼·지연 로드, op 릴레이 WS·서버 저장, 회비 장부 템플릿, xlsx/CSV 가져오기·내보내기 | 1주 |
-| M6 | arm64 빌드, docker-compose, DSM 리버스 프록시·인증서, SETUP/OPERATIONS 문서 | 2~3일 |
+
+**2단계 — NAS 배포 (프로토타입 검수 후 시작)**
+
+| 단계 | 내용 | 예상 |
+|---|---|---|
+| M6 | §5 NAS·도메인 사전 작업 → arm64 빌드, docker-compose, DSM 리버스 프록시·인증서, SETUP/OPERATIONS 문서 | 2~3일 |
 
 총 개발 규모: **약 5.5주 (파트타임 기준)**
 
