@@ -64,6 +64,18 @@ export const SAVE_DEBOUNCE_MS = 800;
  */
 export const KEEPALIVE_MAX_BYTES = 60 * 1024;
 
+/**
+ * 마운트 직후 저장된 이미지를 되살리기 전에 "씬이 채워지기" 를 기다리는 폴링 간격·횟수.
+ *
+ * `<Collab>` 은 `excalidrawAPI` 가 생긴 다음에 마운트되지만, Excalidraw 는 `initialData` 를
+ * **한 박자 뒤에** 씬에 반영한다. 그 사이에 `restoreImageFiles()` 가 돌면 요소가 하나도 없어
+ * 되살릴 이미지를 찾지 못한다. 개발 모드에서는 React StrictMode 가 컴포넌트를 한 번 더
+ * 마운트해 주어 두 번째 시도가 성공했지만, **프로덕션 빌드에는 그 두 번째 기회가 없다**
+ * (M6 프로덕션 스모크에서 발견 — 새로고침하면 이미지가 빈 자리로 남았다).
+ */
+export const RESTORE_IMAGES_RETRY_MS = 150;
+export const RESTORE_IMAGES_MAX_ATTEMPTS = 40; // 최대 약 6초
+
 /** 환경변수에서 밀리초 상수를 읽는다 (E2E 에서 타이머를 줄이기 위해). */
 const msFromEnv = (raw: string | undefined, fallback: number): number => {
   const parsed = Number(raw);

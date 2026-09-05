@@ -8,6 +8,7 @@
  *  - CommonJS(`require`) → ESM `import`
  *  - `dotenv` 제거 (환경변수를 그대로 읽는다)
  *  - `debug` 패키지 제거 (`ROOM_DEBUG=1` 일 때만 찍는 console 래퍼)
+ *  - SIGTERM/SIGINT 정상 종료 (도커 stop 에서 열린 소켓을 닫고 나간다)
  * 이벤트 이름(`join-room`·`server-broadcast`·`server-volatile-broadcast`·
  * `user-follow`·`room-user-change`·`first-in-room`·`new-user`·
  * `user-follow-room-change`·`broadcast-unfollow`), volatile 브로드캐스트,
@@ -159,4 +160,29 @@ try {
   });
 } catch (error) {
   console.error(error);
+}
+
+/**
+ * 정상 종료 — `docker stop` 은 SIGTERM 을 보낸다.
+ * socket.io 연결은 keep-alive 라 `server.close()` 만으로는 끝나지 않아
+ * `closeAllConnections()` 로 열린 소켓을 함께 닫는다. 릴레이는 무상태라 저장할 것이 없다.
+ */
+let closing = false;
+const shutdown = (signal: NodeJS.Signals): void => {
+  if (closing) return;
+  closing = true;
+  console.log(`room: ${signal} 수신 — 정상 종료`);
+  const force = setTimeout(() => process.exit(1), 5_000);
+  force.unref();
+  server.close(() => {
+    clearTimeout(force);
+    process.exit(0);
+  });
+  server.closeAllConnections();
+};
+
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  process.once(signal, () => {
+    shutdown(signal);
+  });
 }

@@ -1,0 +1,66 @@
+# DS118 배포용 compose (Container Manager → 프로젝트).
+#
+# 이미지는 NAS 에서 빌드하지 않는다 — PC 에서 `build-arm64.sh` 로 만든 tar 를
+# 「이미지 → 추가 → 파일에서 추가」로 올린 뒤 이 파일로 프로젝트를 만든다 (SETUP.md 3~4단계).
+# 그래서 `build:` 가 아니라 `image:` 를 쓴다.
+#
+# 태그는 .env 의 APP_TAG / ROOM_TAG 로 바꾼다 (업데이트 절차는 OPERATIONS.md).
+
+services:
+  app:
+    image: ds118-whiteboard-app:${APP_TAG:-latest}
+    container_name: whiteboard-app
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      # 이미지에 이미 들어 있는 값이지만, 컨테이너를 보고 바로 알 수 있게 다시 적는다.
+      NODE_ENV: production
+      PORT: "3001"
+      HOST: 0.0.0.0
+      DATA_DIR: /data
+      FRONTEND_DIST: /app/frontend/dist
+      # 릴레이는 내부 네트워크 이름으로만 부른다 (호스트에 열지 않는다).
+      ROOM_URL: http://room:3002
+      # V8 힙 상한 — 컨테이너 한도(mem_limit)보다 낮게 잡아, cgroup 이 프로세스를
+      # 죽이기 전에 GC 가 먼저 돌게 한다. 근거는 README/보고서의 메모리 측정표.
+      NODE_OPTIONS: --max-old-space-size=256
+    ports:
+      # 리버스 프록시(DSM)만 이 포트를 본다. 공유기에서 3001 을 열지 않는다.
+      - "3001:3001"
+    volumes:
+      # SQLite(app.db) · 업로드 파일(files/) · 백업(backup/) 이 모두 여기 쌓인다.
+      # 호스트 쪽 디렉터리는 uid 1000 이 쓸 수 있어야 한다 (SETUP.md 4단계).
+      - ./data:/data
+    depends_on:
+      - room
+    mem_limit: 384m
+    mem_reservation: 192m
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
+
+  room:
+    image: ds118-whiteboard-room:${ROOM_TAG:-latest}
+    container_name: whiteboard-room
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      PORT: "3002"
+      HOST: 0.0.0.0
+      NODE_OPTIONS: --max-old-space-size=96
+    # ports 없음 — 브라우저는 app 의 /socket.io 프록시를 거쳐서만 붙는다.
+    # 그 경계에서 세션 쿠키 인증을 검사한다 (backend/src/collab/proxy.ts).
+    expose:
+      - "3002"
+    mem_limit: 144m
+    mem_reservation: 96m
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"

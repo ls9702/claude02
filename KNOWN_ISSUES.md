@@ -62,14 +62,20 @@ M2(실시간 협업)·M3(오브젝트 댓글)·M4(AI 검색 카드) 검증에서
   (M2 는 "릴레이는 프로토콜 그대로" 가 전제).
 - **다시 볼 시점**: 릴레이를 손보는 마일스톤. 5인 이하 운영에서는 위험이 낮다.
 
-## 5. 메인 앱에 Content-Security-Policy 가 없다
+## 5. 메인 앱에 Content-Security-Policy 가 없다 — **M6 에서 해소**
 
-- **현상**: SPA 응답에 CSP 헤더가 없다. (업로드 이미지 서빙 `GET /files/:id` 에는 이미
-  `default-src 'none'; sandbox` 가 걸려 있어 업로드 콘텐츠발 XSS 는 막혀 있다.)
-- **이번에 한 것**: 모든 응답에 `X-Frame-Options: DENY` 를 붙였다(클릭재킹 방지).
-- **왜 지금 고치지 않는가**: Excalidraw 는 인라인 스타일·워커·wasm 을 쓰기 때문에
-  실효성 있는 CSP 는 배포 형태(리버스 프록시·정적 서빙 경로)가 확정된 뒤에 맞춰야 한다.
-- **다시 볼 시점**: **M6 배포 단계** — 리버스 프록시 설정과 함께.
+- **당시 현상**: SPA 응답에 CSP 헤더가 없었다. (업로드 이미지 서빙 `GET /files/:id` 에는 이미
+  `default-src 'none'; sandbox` 가 걸려 있어 업로드 콘텐츠발 XSS 는 막혀 있었다.)
+- **해소**: M6 에서 **프로덕션 전용** CSP 를 붙였다(`backend/src/security.ts`).
+  `default-src 'self'` 를 바탕으로 Excalidraw·Fortune-sheet 가 실제로 요구하는 것만 연다 —
+  `style-src 'unsafe-inline'`, `img-src/media-src data: blob:`, `worker-src blob:`, `font-src data:`,
+  `connect-src` 에 PUBLIC_URL 의 ws 오리진. `object-src 'none'`, `frame-ancestors 'none'`,
+  `base-uri 'self'` 로 잠그고 **`'unsafe-eval'` 은 열지 않는다**(wasm 은 `'wasm-unsafe-eval'` 로만 허용).
+  `index.html` 의 인라인 스크립트는 `'unsafe-inline'` 대신 **기동 시 계산한 sha256 해시**로 허용한다.
+- **왜 프로덕션에서만인가**: dev 는 Vite HMR 이 인라인 스크립트·eval 을 쓰고 5173↔3001 로 오리진이
+  갈라져 있어 같은 정책을 쓸 수 없다. dev e2e 에는 영향이 없다.
+- **검증**: `npm run e2e:prod` — 프로덕션 빌드를 실제로 서빙하며 캔버스·이미지·협업·시트·AI 카드를
+  돌리고, 페이지 안에서 `securitypolicyviolation` 이벤트를 모아 예상치 못한 차단이 없는지 본다.
 
 ## 6. 잠긴 세션의 뷰어는 15초 주기 폴링으로 갱신된다
 
@@ -208,3 +214,19 @@ M5에서 실측으로 확인한 `@fortune-sheet/react` 1.0.4 의 성질이다. �
   이어서 카드를 옮긴 뒤 Ctrl+Z 를 한 번 누르면 이동 대신 선택 해제가 먼저 되돌아간다.
 - **판단**: Excalidraw 코어의 표준 동작이라(PLAN §2.1 "개발 불필요" 영역) 이 앱에서 고치지 않는다.
   선택 해제 없이 바로 드래그해 옮긴 경우는 Ctrl+Z 한 번으로 정상 복귀한다(댓글 핀도 함께).
+
+## 19. CSP 가 Excalidraw 의 CDN 폰트 후보를 막는다 — 콘솔 경고는 정상 (M6)
+
+- **현상**: 프로덕션에서 브라우저 콘솔에
+  `Refused to load the font 'https://esm.sh/@excalidraw/excalidraw@0.18.1/dist/prod/fonts/...'` 가
+  폰트 개수만큼(수백 줄) 찍힌다.
+- **왜 그런가**: `@excalidraw/excalidraw` 의 `FontMetadata.createUrls` 는 `window.EXCALIDRAW_ASSET_PATH`
+  로 만든 **자체 호스팅 URL 을 첫 번째 후보**로 넣고, 그 뒤에 **언제나** 업스트림 CDN(`ASSETS_FALLBACK_URL`,
+  esm.sh)을 덧붙인다. 브라우저는 `@font-face` 의 후보 목록을 CSP 로 먼저 거르면서 허용되지 않는 후보마다
+  위반을 보고한다 — 실제로 쓰이는 것은 첫 번째(우리 오리진) 후보다.
+- **확인한 것**(`e2e/prod-tests/02-app-smoke.spec.ts` 의 「폰트」 테스트): 캔버스에 한글·라틴 텍스트를 넣으면
+  `document.fonts.check("20px Excalifont")` 가 참이 되고, 실제 폰트 요청은 `/excalidraw-assets/fonts/...`
+  로만 나간다. **esm.sh 로는 한 바이트도 나가지 않는다.**
+- **판단**: 이것은 CSP 가 제 일을 한 결과다 — NAS 가 외부 CDN 에 나가지 않는다는 보장이 오히려 생겼다.
+  `font-src` 에 `https://esm.sh` 를 넣으면 경고는 사라지지만 자체 호스팅의 의미가 없어지므로 넣지 않는다.
+- **다시 볼 시점**: 업스트림이 폴백 URL 을 선택 사항으로 바꾸면(현재는 하드코딩) 그때 정리한다.

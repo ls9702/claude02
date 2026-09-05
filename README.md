@@ -3,15 +3,24 @@
 Excalidraw 를 임베드한 자체 호스팅 화이트보드. 관리자가 계정과 세션(보드)을 만들고 사용자를 할당하면,
 사용자는 자신에게 할당된 세션의 페이지(그림판 / 시트)를 열어 함께 작업한다.
 
-전체 스펙은 [`PLAN.md`](./PLAN.md) 참고. 현재 구현 단계는 **M3 — 오브젝트 댓글(핀 오버레이 · 스레드 · 실시간 반영)**.
+전체 스펙은 [`PLAN.md`](./PLAN.md) 참고. 현재 구현 단계는 **M6 — NAS 배포 산출물(컨테이너 · compose · 문서)**.
+배포는 [`SETUP.md`](./SETUP.md), 운영은 [`OPERATIONS.md`](./OPERATIONS.md).
 
 ## 저장소 구조
 
 ```
-backend/    Fastify 5 + better-sqlite3 (ESM TypeScript, dev 는 tsx / 빌드는 tsc)
-frontend/   Vite 8 + React 19 + @excalidraw/excalidraw 0.18.1
-room/       excalidraw-room 릴레이 (업스트림 벤더링, MIT — `room/LICENSE`)
-e2e/        Playwright 시나리오 테스트
+backend/               Fastify 5 + better-sqlite3 (ESM TypeScript, dev 는 tsx / 빌드는 tsc)
+  Dockerfile           app 이미지 (멀티스테이지, node:22-alpine, non-root)
+frontend/              Vite 8 + React 19 + @excalidraw/excalidraw 0.18.1
+room/                  excalidraw-room 릴레이 (업스트림 벤더링, MIT — `room/LICENSE`)
+  Dockerfile           room 이미지
+e2e/                   Playwright 시나리오 테스트
+  tests/               dev 모드 E2E (`npm run e2e`)
+  prod-tests/          프로덕션 모드 스모크 (`npm run e2e:prod`)
+docker-compose.yml     NAS 배포 (app + room)
+build-arm64.sh         PC 에서 arm64 크로스 빌드 → dist-images/*.tar
+SETUP.md               NAS 배포 가이드 (DSM · 리버스 프록시 · 인증서)
+OPERATIONS.md          운영 안내서 (계정 · 백업 · 업데이트 · 문제 해결)
 ```
 
 ## 빠른 시작
@@ -38,6 +47,7 @@ Vite dev 서버는 `/api`, `/files`, `/ws`, `/socket.io`(WebSocket 포함)를 �
 | `npm run typecheck` | 모든 워크스페이스 `tsc --noEmit` |
 | `npm test` | backend / frontend vitest |
 | `npm run e2e` | Playwright E2E (백엔드·room·프론트를 임시 DATA_DIR 로 자동 기동) |
+| `npm run e2e:prod` | **프로덕션 모드 스모크** — 빌드 산출물을 `NODE_ENV=production` 으로 서빙하며 CSP·사전 압축·캐시 헤더·자체 호스팅 폰트와 캔버스/이미지/협업/시트/AI 를 함께 확인한다 (포트 3901/3902/3903) |
 
 ## 환경변수
 
@@ -60,7 +70,9 @@ Vite dev 서버는 `/api`, `/files`, `/ws`, `/socket.io`(WebSocket 포함)를 �
 | `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com` | 업스트림 주소. E2E 는 `e2e/mock-gemini.mjs` 를 가리킨다 |
 | `AI_RATE_LIMIT_PER_MIN` | `20` | AI 호출 분당 퓨즈 (사용자 무관 **전체 합**, 폭주 방지용) |
 | `COMMENT_WS_PING_MS` | `30000` | 댓글 WebSocket ping 주기. pong 을 연속 2회 놓친 소켓은 서버가 끊는다 |
-| `NODE_ENV` | `development` | `production` 이면 정적 서빙 + SPA fallback 활성화 |
+| `NODE_ENV` | `development` | `production` 이면 정적 서빙 + SPA fallback + CSP 활성화 |
+| `APP_VERSION` | `dev` | `GET /api/health` 가 그대로 돌려준다. 배포 이미지 태그를 넣어 두면 지금 무엇이 도는지 알 수 있다 |
+| `NODE_OPTIONS` | (없음) | 컨테이너에서 `--max-old-space-size` 로 V8 힙 상한을 `mem_limit` 아래에 둔다 (docker-compose.yml) |
 
 ## API 요약
 
@@ -78,6 +90,10 @@ PATCH  /api/admin/users/:id                    DELETE /api/admin/users/:id
 GET    /api/admin/sessions                     POST   /api/admin/sessions
 PATCH  /api/admin/sessions/:id                 DELETE /api/admin/sessions/:id
 PUT    /api/admin/sessions/:id/members/:userId DELETE /api/admin/sessions/:id/members/:userId
+POST   /api/admin/backup        → VACUUM INTO data/backup/app-<ts>.db (최신 7개 유지)
+GET    /api/admin/backup        → {backups:[...최신순], keep}
+
+GET    /api/health              → {ok, db, room, uptime, version}  (인증 불필요, HEALTHCHECK 용)
 
 GET    /api/sessions                    → 내게 할당된 세션 목록
 GET    /api/sessions/:id                → {session, pages}
@@ -230,15 +246,75 @@ ANY    /socket.io/*                     → room 릴레이 프록시 (로그인 
 `frontend/index.html` 최상단에서 `window.EXCALIDRAW_ASSET_PATH = "/excalidraw-assets/"` 를 설정한다.
 복사본은 저장소에 커밋하지 않는다(`.gitignore`). E2E 에 외부 요청이 없는지 검증하는 테스트가 있다.
 
+업스트림은 `@font-face` 의 **두 번째 후보**로 언제나 CDN(esm.sh)을 덧붙인다(`ASSETS_FALLBACK_URL`, 하드코딩).
+프로덕션 CSP 의 `font-src 'self' data:` 가 그 후보를 막으므로 브라우저 콘솔에
+`Refused to load the font 'https://esm.sh/...'` 가 폰트 수만큼 찍히지만, **실제 폰트는 첫 번째 후보인
+우리 오리진에서 받는다** — `npm run e2e:prod` 의 「폰트」 테스트가 `document.fonts.check()` 와
+네트워크 요청으로 이를 확인한다. 자세한 내용은 `KNOWN_ISSUES.md` 19번.
+
 ## 테스트
 
 ```bash
 npm run typecheck   # backend / frontend / e2e
 npm test            # vitest (backend + frontend)
-npm run e2e         # Playwright 시나리오
+npm run e2e         # Playwright 시나리오 (dev 모드)
+npm run e2e:prod    # 프로덕션 모드 스모크 (빌드 후 실행)
 ```
 
 E2E 는 `e2e/.tmp/data` 를 비우고 백엔드(`ADMIN_PASSWORD=admin1234`)·room(3002)·가짜 Gemini(`e2e/mock-gemini.mjs`, 3003)·
 Vite dev 서버(`VITE_E2E=1`)를 직접 띄운다. AI 시나리오는 진짜 Google 을 부르지 않는다 —
 백엔드의 `GEMINI_BASE_URL` 이 모킹 서버를 가리키고 키는 `e2e-test-key` 다.
 Chromium 은 `PLAYWRIGHT_BROWSERS_PATH` 에 미리 설치된 것을 사용한다.
+
+`npm run e2e:prod` 는 배포 형태를 그대로 시험한다 — `node backend/dist/index.js` 를 `NODE_ENV=production`
+으로 띄우고 SPA 도 그 서버가 서빙한다(Vite dev 서버 없음). 포트는 **3901/3902/3903**, 상태 디렉터리는
+`e2e/.state-prod` 로 dev E2E(3001/3002/3003/5173)와 겹치지 않아 두 벌을 같은 머신에서 돌릴 수 있다.
+프론트는 `npm run build:e2e`(= `vite build --mode e2e`)로 만든다 — **프로덕션 빌드에 테스트 훅만 남긴 것**이고,
+배포 이미지는 언제나 평범한 `npm run build` 산출물이다.
+
+## 배포 (M6)
+
+NAS(Synology DS118 · DSM 7.2 · arm64 · RAM 1GB)에 컨테이너 두 개로 올린다.
+자세한 절차는 **[SETUP.md](./SETUP.md)**, 운영은 **[OPERATIONS.md](./OPERATIONS.md)** 를 본다.
+
+```bash
+./build-arm64.sh        # PC 에서 arm64 크로스 빌드 → dist-images/*.tar
+```
+
+```
+[브라우저] ──HTTPS──> [DSM 리버스 프록시] ──HTTP──> [app :3001] ──내부망──> [room :3002]
+                       (WebSocket 프리셋)            SPA·API·WS·백업        협업 릴레이
+```
+
+- **이미지**: `backend/Dockerfile`(app) · `room/Dockerfile`(room). `node:22-alpine` 멀티스테이지,
+  최종 이미지는 **non-root(uid 1000)** 이고 컴파일러·소스·프론트엔드 의존성이 들어가지 않는다.
+  `HEALTHCHECK` 는 `/api/health`(app) · `/`(room) 를 본다.
+- **정적 서빙**: 프론트 빌드 뒤 `frontend/scripts/precompress.mjs` 가 `*.br`/`*.gz` 를 만들고
+  `@fastify/static` 의 `preCompressed` 가 그대로 흘려보낸다. 런타임 압축을 쓰지 않는 이유는
+  DS118 의 CPU(1.4GHz A53)에서 요청마다 압축하는 비용이 그대로 지연이 되기 때문이다.
+  해시가 붙은 자산은 `max-age=31536000, immutable`, `index.html` 은 `no-cache` 로 내려간다.
+- **보안 헤더**: 프로덕션에서만 CSP 를 붙인다(`backend/src/security.ts`, KNOWN_ISSUES 5번).
+  `index.html` 의 인라인 스크립트는 기동 시 계산한 **sha256 해시**로 허용하고 `'unsafe-inline'`/`'unsafe-eval'`
+  은 열지 않는다.
+- **정상 종료**: SIGTERM 을 받으면 새 연결을 막고 WebSocket 을 닫은 뒤 SQLite 를 닫는다(WAL 체크포인트).
+  room 도 같은 처리를 한다.
+- **백업**: `POST /api/admin/backup` → `VACUUM INTO data/backup/app-<ts>.db`, 최신 7개 유지.
+  DSM 작업 스케줄러에서 curl 로 부르는 예시가 OPERATIONS.md 에 있다.
+- **헬스**: `GET /api/health` → `{ok, db, room, uptime, version}`.
+  릴레이가 죽어도 `ok` 는 참이다 — app 은 저장·댓글·시트·AI 를 계속 처리할 수 있고,
+  여기서 unhealthy 로 떨어뜨리면 도커가 멀쩡한 app 을 재시작해 오히려 서비스가 끊긴다.
+
+### 메모리 상한
+
+`docker-compose.yml` 의 `mem_limit` 은 개발 PC(x86_64/glibc)에서 **프로덕션 빌드**로 잰 값에 여유를 붙였다.
+
+| 상황 | app RSS | room RSS |
+|---|---|---|
+| 기동 직후(idle) | 100~113MB | 78~84MB |
+| 5명 동시 편집(사람 속도, 90초) | 최대 140MB | 최대 84MB |
+| 5명이 초당 수십 요소를 붓는 스트레스(60초, 최종 4,300요소) | 최대 372MB | 최대 99MB |
+
+→ app `mem_limit 384m` / `mem_reservation 192m`, room `mem_limit 144m` / `mem_reservation 96m`.
+`NODE_OPTIONS=--max-old-space-size`(app 256 / room 96)로 cgroup 이 죽이기 전에 GC 가 먼저 돌게 한다.
+arm64/musl 인 NAS 에서는 값이 다를 수 있으므로 운영 첫 주에 Container Manager 의 컨테이너별 메모리를 확인한다
+(SETUP.md 9번 체크리스트 10항).
