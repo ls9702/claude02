@@ -59,6 +59,8 @@ export function AiAskSheet({ pageId, excalidrawAPI, username, readOnly, onClose 
     setBusy(true);
     setError(null);
     setAdded(false);
+    // 이전 답변 미리보기를 지워 재질문 중 옛 카드가 추가되지 않게 한다.
+    setAnswer(null);
     try {
       const { prompt, context } = buildAskPrompt(text, picked === text ? "" : picked);
       const result = await askAi({ pageId, prompt, grounding, context });

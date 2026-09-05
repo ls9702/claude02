@@ -21,10 +21,13 @@ export interface GeminiTarget {
   apiKey: string;
 }
 
-/** `<base>/v1beta/models/<model>:generateContent?key=…` */
-export function geminiUrl(target: GeminiTarget): string {
+/**
+ * `<base>/v1beta/models/<model>:generateContent`
+ * API 키는 URL 이 아니라 `x-goog-api-key` 헤더로 보낸다 — 쿼리스트링은 프록시·APM 로그에 남기 쉽다.
+ */
+export function geminiUrl(target: Pick<GeminiTarget, "baseUrl" | "model">): string {
   const base = target.baseUrl.replace(/\/+$/, "");
-  return `${base}/v1beta/models/${encodeURIComponent(target.model)}:generateContent?key=${encodeURIComponent(target.apiKey)}`;
+  return `${base}/v1beta/models/${encodeURIComponent(target.model)}:generateContent`;
 }
 
 /** 한 번의 `generateContent` 왕복. 던지지 않는다 — 실패도 `{status:0}` 으로 돌려준다. */
@@ -36,7 +39,11 @@ export async function callGemini(
   try {
     const response = await fetch(geminiUrl(target), {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "x-goog-api-key": target.apiKey,
+      },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(timeoutMs),
     });

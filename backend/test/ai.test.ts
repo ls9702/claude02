@@ -47,8 +47,8 @@ describe("Gemini 페이로드", () => {
 describe("업스트림 주소", () => {
   it("모델과 키를 URL 에 넣는다", () => {
     expect(
-      geminiUrl({ baseUrl: "https://example.test/", model: "gemini-2.5-flash", apiKey: "k e y" }),
-    ).toBe("https://example.test/v1beta/models/gemini-2.5-flash:generateContent?key=k%20e%20y");
+      geminiUrl({ baseUrl: "https://example.test/", model: "gemini-2.5-flash" }),
+    ).toBe("https://example.test/v1beta/models/gemini-2.5-flash:generateContent");
   });
 });
 
@@ -91,7 +91,7 @@ describe("업스트림 오류 잘라내기", () => {
 interface Upstream {
   server: Server;
   url: string;
-  requests: Array<{ url: string; body: unknown }>;
+  requests: Array<{ url: string; apiKey?: string | string[] | undefined; body: unknown }>;
   reply: { status: number; body: string };
   close(): Promise<void>;
 }
@@ -106,7 +106,11 @@ async function startUpstream(): Promise<Upstream> {
     req.on("data", (c: Buffer) => chunks.push(c));
     req.on("end", () => {
       const raw = Buffer.concat(chunks).toString("utf8");
-      state.requests.push({ url: req.url ?? "", body: raw ? JSON.parse(raw) : null });
+      state.requests.push({
+        url: req.url ?? "",
+        apiKey: req.headers["x-goog-api-key"],
+        body: raw ? JSON.parse(raw) : null,
+      });
       res.writeHead(state.reply.status, { "content-type": "application/json" });
       res.end(state.reply.body);
     });
@@ -276,7 +280,8 @@ describe("AI 프록시 (키 있음)", () => {
     expect(upstream.requests).toHaveLength(1);
     const sent = upstream.requests[0]!;
     expect(sent.url).toContain(`/v1beta/models/${DEFAULT_GEMINI_MODEL}:generateContent`);
-    expect(sent.url).toContain("key=test-key");
+    expect(sent.url).not.toContain("test-key");
+    expect(sent.apiKey).toBe("test-key");
     const payload = sent.body as { tools?: unknown; contents: Array<{ parts: Array<{ text: string }> }> };
     expect(payload.tools).toEqual([{ google_search: {} }]);
     expect(payload.contents[0]!.parts[0]!.text).toContain("부산 여행");

@@ -94,7 +94,7 @@ const server = createServer((req, res) => {
     const grounded = Array.isArray(body?.tools) && body.tools.length > 0;
     const text = String(body?.contents?.[0]?.parts?.[0]?.text ?? "");
     received.push({
-      key: url.searchParams.get("key"),
+      key: req.headers["x-goog-api-key"] ?? url.searchParams.get("key"),
       model: url.pathname,
       grounded,
       text,
