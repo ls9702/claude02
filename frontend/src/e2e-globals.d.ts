@@ -24,6 +24,15 @@ declare global {
     __collaboratorCount?: number;
     /** 릴레이 연결 상태 (idle/connected/reconnecting/locked) */
     __collabConnection?: string;
+    // ---- 시트 (M5) ----
+    /** Fortune-sheet 인스턴스 ref (`current` 를 매번 새로 읽어야 최신 context 다) */
+    __sheetRef?: { current: unknown } | undefined;
+    /** 디바운스를 건너뛰고 즉시 저장한다 */
+    __sheetFlush?: (() => Promise<void>) | undefined;
+    /** 수식을 다시 계산한다 */
+    __sheetRecalculate?: (() => void) | undefined;
+    __sheetSaveStatus?: string;
+    __sheetReady?: boolean;
   }
 }
 

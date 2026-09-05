@@ -1,8 +1,8 @@
 import { expect, test } from "@playwright/test";
-import { ALICE_STATE, adminApi, createSessionWithPage, loadFixtures } from "./fixtures";
+import { ALICE_STATE, adminApi, createSessionWithPage, loadFixtures, waitForSheet } from "./fixtures";
 
-/** 시나리오 4 — 페이지 생성/이름 변경/전환/순서 변경 + 시트 플레이스홀더 */
-test("페이지 CRUD·전환·순서 변경과 시트 플레이스홀더", async ({ browser, playwright }) => {
+/** 시나리오 4 — 페이지 생성/이름 변경/전환/순서 변경 + 시트 페이지 */
+test("페이지 CRUD·전환·순서 변경과 시트 페이지", async ({ browser, playwright }) => {
   const { aliceId } = loadFixtures();
   const api = await adminApi(playwright);
   const { sessionId } = await createSessionWithPage(api, {
@@ -27,16 +27,17 @@ test("페이지 CRUD·전환·순서 변경과 시트 플레이스홀더", async
   await page.getByTestId("new-page-submit").click();
   await expect(page.getByTestId("page-tab")).toHaveCount(2);
 
-  // 시트 페이지 1개 추가
+  // 시트 페이지 1개 추가 (빈 시트 템플릿)
   await page.getByTestId("add-page-button").click();
   await page.getByTestId("new-page-name").fill("회비 장부");
   await page.getByTestId("new-page-type-sheet").check();
+  await page.getByTestId("new-page-template-blank").check();
   await page.getByTestId("new-page-submit").click();
   await expect(page.getByTestId("page-tab")).toHaveCount(3);
 
-  // 시트 페이지로 이동하면 M5 플레이스홀더가 보인다
-  await expect(page.getByTestId("sheet-placeholder")).toBeVisible();
-  await expect(page.getByTestId("sheet-placeholder")).toContainText("시트 페이지는 준비 중입니다 (M5)");
+  // 시트 페이지로 이동하면 Fortune-sheet 워크북이 열린다
+  await waitForSheet(page);
+  await expect(page.getByTestId("sheet-export-xlsx")).toBeVisible();
 
   // 탭 타입 아이콘 확인
   const tabs = page.getByTestId("page-tab");
@@ -55,7 +56,7 @@ test("페이지 CRUD·전환·순서 변경과 시트 플레이스홀더", async
   // 페이지 전환 (시트 → 첫 캔버스)
   await page.getByTestId("page-tab").nth(0).getByTestId("page-tab-button").click();
   await expect(page.getByTestId("canvas-wrapper")).toBeVisible();
-  await expect(page.getByTestId("sheet-placeholder")).toHaveCount(0);
+  await expect(page.getByTestId("sheet-wrapper")).toHaveCount(0);
 
   // 순서 변경 (◀ 버튼으로 시트를 한 칸 앞으로)
   const namesBefore = await page.getByTestId("page-tab").allInnerTexts();

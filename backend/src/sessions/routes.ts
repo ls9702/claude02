@@ -5,7 +5,8 @@ import { badRequest, notFound } from "../errors.js";
 import { newId, newRoomId, newRoomKey, nowIso } from "../ids.js";
 import type { PageRow, PageType, SessionRow } from "../types.js";
 import { toPublicPage, toPublicSession } from "../types.js";
-import { asObject, requireArray, requireString } from "../validate.js";
+import { asObject, optionalString, requireArray, requireString } from "../validate.js";
+import { buildSheetDoc, isSheetTemplate } from "../sheets/templates.js";
 import { fileIdsForPages, pruneOrphanFiles } from "../files/storage.js";
 import { unresolvedCountsBySession } from "../comments/service.js";
 
@@ -71,6 +72,12 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
     }
     const type: PageType = typeRaw;
 
+    // 시트 페이지는 템플릿(빈 시트 / 회비 장부)에 따라 초기 데이터를 서버에서 만든다.
+    const templateRaw = optionalString(body, "template", "템플릿", { max: 20 }) ?? "blank";
+    if (type === "sheet" && !isSheetTemplate(templateRaw)) {
+      throw badRequest("템플릿은 blank 또는 ledger 여야 합니다.");
+    }
+
     const maxRow = app.db
       .prepare<[string], { m: number | null }>(
         "SELECT MAX(position) AS m FROM pages WHERE session_id = ?",
@@ -94,9 +101,10 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
         )
         .run(id, at, req.user!.id);
     } else {
+      const doc = buildSheetDoc(isSheetTemplate(templateRaw) ? templateRaw : "blank");
       app.db
-        .prepare("INSERT INTO sheets (page_id, data, version, updated_at) VALUES (?, '{}', 0, ?)")
-        .run(id, at);
+        .prepare("INSERT INTO sheets (page_id, data, version, updated_at) VALUES (?, ?, 0, ?)")
+        .run(id, JSON.stringify(doc), at);
     }
 
     reply.code(201);

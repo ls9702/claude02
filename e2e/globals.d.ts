@@ -30,4 +30,27 @@ interface Window {
   __collaboratorCount?: number;
   /** 릴레이 연결 상태 (idle/connected/reconnecting/locked) */
   __collabConnection?: string;
+
+  // ---- 시트 (M5) ----
+  /** Fortune-sheet 인스턴스 ref — `current` 를 호출할 때마다 새로 읽어야 한다. */
+  __sheetRef?: { current: SheetTestApi | null };
+  /** 디바운스를 건너뛰고 즉시 저장한다 */
+  __sheetFlush?: () => Promise<void>;
+  /** 수식을 다시 계산한다 */
+  __sheetRecalculate?: () => void;
+  __sheetSaveStatus?: string;
+  __sheetReady?: boolean;
+}
+
+/** Fortune-sheet 인스턴스 중 E2E 에서 쓰는 부분만 */
+interface SheetTestApi {
+  getAllSheets(): Array<{
+    name: string;
+    id?: string;
+    data?: Array<Array<Record<string, unknown> | null>>;
+    celldata?: Array<{ r: number; c: number; v: Record<string, unknown> | null }>;
+  }>;
+  getSheet(): { name: string; id?: string };
+  setCellValue(row: number, column: number, value: unknown, options?: Record<string, unknown>): void;
+  calculateFormula(id?: string): void;
 }

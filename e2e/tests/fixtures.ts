@@ -56,7 +56,14 @@ export async function login(page: Page, username: string, password: string): Pro
 /** 관리자 API 로 세션 + 멤버 + 캔버스 페이지를 한 번에 만든다. */
 export async function createSessionWithPage(
   api: APIRequestContext,
-  opts: { name: string; memberIds?: string[]; pageName?: string; pageType?: "canvas" | "sheet" },
+  opts: {
+    name: string;
+    memberIds?: string[];
+    pageName?: string;
+    pageType?: "canvas" | "sheet";
+    /** 시트 페이지일 때의 템플릿 (기본 blank) */
+    template?: "blank" | "ledger";
+  },
 ): Promise<{ sessionId: string; pageId: string }> {
   const created = await api.post("/api/admin/sessions", { data: { name: opts.name } });
   expect(created.status(), await created.text()).toBe(201);
@@ -68,7 +75,11 @@ export async function createSessionWithPage(
   }
 
   const page = await api.post(`/api/sessions/${sessionId}/pages`, {
-    data: { name: opts.pageName ?? "캔버스", type: opts.pageType ?? "canvas" },
+    data: {
+      name: opts.pageName ?? "캔버스",
+      type: opts.pageType ?? "canvas",
+      ...(opts.pageType === "sheet" ? { template: opts.template ?? "blank" } : {}),
+    },
   });
   expect(page.status(), await page.text()).toBe(201);
   return { sessionId, pageId: (await page.json()).page.id as string };
@@ -226,4 +237,102 @@ export async function deleteElement(page: Page, elementId: string): Promise<void
     );
     api.updateScene({ elements: next });
   }, elementId);
+}
+
+// ---- 시트 (M5) ----------------------------------------------------------
+
+/** 회비 장부 템플릿의 열 너비(px) — `backend/src/sheets/templates.ts` 와 같은 값이어야 한다. */
+const LEDGER_COLUMN_WIDTHS = [100, 70, 190, 110, 90, 200, 90, 24, 90, 100, 100, 100];
+/** Fortune-sheet 기본 행 높이(px)와 장부 템플릿의 머리글 행 높이(rowlen[0]) */
+const ROW_HEIGHT = 20;
+const FIRST_ROW_HEIGHT = 24;
+
+/** 시트가 마운트되고 초기 수식 계산이 끝날 때까지 기다린다. */
+export async function waitForSheet(page: Page): Promise<void> {
+  await expect(page.getByTestId("sheet-wrapper")).toBeVisible({ timeout: 60_000 });
+  await page.waitForFunction(() => Boolean(window.__sheetReady && window.__sheetRef?.current), null, {
+    timeout: 60_000,
+  });
+  // 첫 계산(마운트 150ms 뒤 + 2패스)이 끝나기를 기다린다.
+  await page.waitForTimeout(1_200);
+}
+
+/** 현재 시트의 셀 값을 읽는다 (0-index). */
+export async function cellValue(
+  page: Page,
+  r: number,
+  c: number,
+): Promise<{ v: unknown; m: unknown; f: unknown } | null> {
+  return page.evaluate(
+    ({ r: row, c: col }) => {
+      const api = window.__sheetRef?.current;
+      if (!api) return null;
+      const sheet = api.getAllSheets()[0];
+      const cell = sheet?.data?.[row]?.[col];
+      if (!cell) return null;
+      return { v: cell.v ?? null, m: cell.m ?? null, f: cell.f ?? null };
+    },
+    { r, c },
+  );
+}
+
+/** 셀 값이 기대한 값이 될 때까지 기다린다. */
+export async function expectCellValue(
+  page: Page,
+  r: number,
+  c: number,
+  expected: unknown,
+  timeout = 20_000,
+): Promise<void> {
+  await expect
+    .poll(async () => (await cellValue(page, r, c))?.v ?? null, { timeout })
+    .toBe(expected);
+}
+
+/**
+ * 장부 시트에서 (r, c) 셀의 화면 좌표 (0-index).
+ * 격자 원점은 `.fortune-cell-area`(행/열 머리글을 뺀 영역)에서 읽는다 —
+ * 자체 툴바·수식 입력줄 높이가 바뀌어도 좌표가 어긋나지 않는다.
+ */
+async function ledgerCellPoint(
+  page: Page,
+  r: number,
+  c: number,
+): Promise<{ x: number; y: number }> {
+  const box = await page.locator(".fortune-cell-area").first().boundingBox();
+  if (!box) throw new Error("시트 격자 영역(.fortune-cell-area)을 찾지 못했습니다.");
+  let x = box.x;
+  for (let i = 0; i < c; i += 1) x += LEDGER_COLUMN_WIDTHS[i] ?? 73;
+  x += (LEDGER_COLUMN_WIDTHS[c] ?? 73) / 2;
+
+  let y = box.y;
+  for (let i = 0; i < r; i += 1) y += i === 0 ? FIRST_ROW_HEIGHT : ROW_HEIGHT;
+  y += (r === 0 ? FIRST_ROW_HEIGHT : ROW_HEIGHT) / 2;
+  return { x, y };
+}
+
+/** 이름 상자(A1 표시)의 현재 값 */
+export async function selectedCellName(page: Page): Promise<string> {
+  return (await page.locator(".fortune-name-box").first().innerText()).trim();
+}
+
+/**
+ * 장부 시트의 셀을 실제로 클릭해 값을 입력한다.
+ * `구분` 열처럼 드롭다운(데이터 유효성)이 걸린 셀은 한 번 클릭으로는 입력이 먹지 않아
+ * 더블클릭으로 편집 모드에 들어간다.
+ */
+export async function typeIntoLedgerCell(
+  page: Page,
+  r: number,
+  c: number,
+  value: string,
+  opts: { doubleClick?: boolean } = {},
+): Promise<void> {
+  const point = await ledgerCellPoint(page, r, c);
+  if (opts.doubleClick) await page.mouse.dblclick(point.x, point.y);
+  else await page.mouse.click(point.x, point.y);
+  await page.waitForTimeout(150);
+  await page.keyboard.type(value);
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(300);
 }

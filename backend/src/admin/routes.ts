@@ -91,6 +91,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       deleteAuthSessionsForUser(app.db, target.id);
       app.collabSockets.closeForUser(target.id);
       app.commentSockets.closeForUser(target.id);
+      app.sheetSockets.closeForUser(target.id);
     }
 
     return { user: toPublicUser(findUserById(app.db, target.id)!) };
@@ -107,6 +108,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     // 삭제된 사용자의 열린 협업·댓글 소켓도 끊는다 (핸드셰이크 이후에는 재검증되지 않는다).
     app.collabSockets.closeForUser(target.id);
     app.commentSockets.closeForUser(target.id);
+    app.sheetSockets.closeForUser(target.id);
     return { ok: true };
   });
 
@@ -168,7 +170,12 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
         .run(locked ? 1 : 0, at, session.id);
       // 잠긴 세션은 릴레이를 쓰지 않는다 — 이 세션에 접근 가능한 사용자의 열린
       // 협업 소켓을 끊는다. 재접속하면 `/room` 이 `{locked:true}` 로 막는다.
-      if (locked) app.collabSockets.closeForUsers(userIdsWithSessionAccess(app.db, session.id));
+      if (locked) {
+        const affected = userIdsWithSessionAccess(app.db, session.id);
+        app.collabSockets.closeForUsers(affected);
+        // 시트 채널도 끊는다 — 재접속하면 서버가 readOnly 로 알려 주고 편집이 막힌다.
+        app.sheetSockets.closeForUsers(affected);
+      }
     }
     const row = app.db
       .prepare<[string], SessionRow>("SELECT * FROM sessions WHERE id = ?")
@@ -210,6 +217,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     // 할당이 풀린 사용자가 이미 열어 둔 협업·댓글 소켓도 끊는다 (즉시 차단 요구사항).
     app.collabSockets.closeForUser(req.params.userId);
     app.commentSockets.closeForUser(req.params.userId);
+    app.sheetSockets.closeForUser(req.params.userId);
     return { ok: true };
   });
 }
