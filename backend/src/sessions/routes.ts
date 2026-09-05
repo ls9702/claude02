@@ -6,6 +6,7 @@ import { newId, newRoomId, newRoomKey, nowIso } from "../ids.js";
 import type { PageRow, PageType, SessionRow } from "../types.js";
 import { toPublicPage, toPublicSession } from "../types.js";
 import { asObject, requireArray, requireString } from "../validate.js";
+import { fileIdsForPages, pruneOrphanFiles } from "../files/storage.js";
 
 interface IdParams {
   id: string;
@@ -113,7 +114,13 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
 
     const current = listPages(app, session.id);
     const currentIds = new Set(current.map((p) => p.id));
-    if (pageIds.length !== current.length || pageIds.some((id) => !currentIds.has(id))) {
+    const uniqueIds = new Set(pageIds);
+    // 세션의 페이지 집합과 정확한 순열이어야 한다 (중복·누락·외부 id 모두 거부).
+    if (
+      pageIds.length !== current.length ||
+      uniqueIds.size !== pageIds.length ||
+      pageIds.some((id) => !currentIds.has(id))
+    ) {
       throw badRequest("페이지 목록이 현재 세션과 일치하지 않습니다.");
     }
 
@@ -141,7 +148,11 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
   app.delete<{ Params: IdParams }>("/api/pages/:id", async (req) => {
     const { page, session } = requirePageAccess(app.db, req.user!, req.params.id);
     assertWritable(session, req.user!);
+    // 페이지가 사라지면 page_files 링크도 cascade 로 사라진다.
+    // 링크가 하나도 남지 않은 파일은 디스크에서도 지운다.
+    const candidates = fileIdsForPages(app.db, [page.id]);
     app.db.prepare("DELETE FROM pages WHERE id = ?").run(page.id);
+    await pruneOrphanFiles(app.db, app.config.dataDir, candidates);
     return { ok: true };
   });
 

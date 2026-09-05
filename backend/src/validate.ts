@@ -1,5 +1,22 @@
 import { badRequest } from "./errors.js";
 
+/**
+ * 한국어 조사 선택 — 마지막 글자의 받침 유무로 고른다.
+ * ("이름을(를) 입력해 주세요." 같은 어색한 병기를 없애기 위한 유틸)
+ */
+export function josa(word: string, withFinal: string, withoutFinal: string): string {
+  const last = word.trim().slice(-1);
+  const code = last.charCodeAt(0);
+  // 한글 음절이 아니면(영문·숫자 등) 받침 없는 형태를 쓴다.
+  if (!last || code < 0xac00 || code > 0xd7a3) return withoutFinal;
+  return (code - 0xac00) % 28 === 0 ? withoutFinal : withFinal;
+}
+
+/** `이름을` / `종류를` */
+export const withEulReul = (word: string): string => `${word}${josa(word, "을", "를")}`;
+/** `이름이` / `종류가` */
+export const withIGa = (word: string): string => `${word}${josa(word, "이", "가")}`;
+
 export function asObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw badRequest("요청 본문이 올바르지 않습니다.");
@@ -14,12 +31,12 @@ export function requireString(
   opts: { min?: number; max?: number } = {},
 ): string {
   const raw = source[key];
-  if (typeof raw !== "string") throw badRequest(`${label}을(를) 입력해 주세요.`);
+  if (typeof raw !== "string") throw badRequest(`${withEulReul(label)} 입력해 주세요.`);
   const value = raw.trim();
   const min = opts.min ?? 1;
   const max = opts.max ?? 200;
-  if (value.length < min) throw badRequest(`${label}을(를) 입력해 주세요.`);
-  if (value.length > max) throw badRequest(`${label}이(가) 너무 깁니다. (최대 ${max}자)`);
+  if (value.length < min) throw badRequest(`${withEulReul(label)} 입력해 주세요.`);
+  if (value.length > max) throw badRequest(`${withIGa(label)} 너무 깁니다. (최대 ${max}자)`);
   return value;
 }
 

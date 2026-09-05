@@ -151,3 +151,51 @@ test("다른 사용자가 추가한 요소가 저장 응답으로 병합되어 �
 
   await context.close();
 });
+
+/** 회귀: 요소를 건드리지 않고 배경색(appState)만 바꿔도 저장되고 새로고침 후에도 유지된다 */
+test("배경색만 바꿔도 저장되고 새로고침 후 유지된다", async ({ browser, playwright }) => {
+  const BACKGROUND = "#7b3de7";
+  const { aliceId } = loadFixtures();
+  const api = await adminApi(playwright);
+  const { sessionId, pageId } = await createSessionWithPage(api, {
+    name: "배경색 저장 테스트",
+    memberIds: [aliceId],
+  });
+  await api.dispose();
+
+  const context = await browser.newContext({ storageState: ALICE_STATE });
+  const page = await context.newPage();
+  await page.goto(`/s/${sessionId}/p/${pageId}`);
+  await waitForExcalidraw(page);
+
+  // 페이지를 연 직후의 첫 저장이 끝난 뒤에 배경색만 바꾼다.
+  await expect(page.getByTestId("save-status")).toHaveText("저장됨", { timeout: 30_000 });
+
+  await page.evaluate((background) => {
+    window.__excalidrawAPI!.updateScene({ appState: { viewBackgroundColor: background } });
+  }, BACKGROUND);
+
+  // 요소 변경이 없어도 서버에 저장되어야 한다.
+  await expect
+    .poll(
+      async () => {
+        const res = await page.request.get(`/api/pages/${pageId}/scene`);
+        if (!res.ok()) return null;
+        return (await res.json()).appState?.viewBackgroundColor ?? null;
+      },
+      { timeout: 30_000 },
+    )
+    .toBe(BACKGROUND);
+
+  // 새로고침해도 배경색이 유지된다.
+  await page.reload();
+  await waitForExcalidraw(page);
+  await expect
+    .poll(
+      async () => page.evaluate(() => window.__excalidrawAPI!.getAppState().viewBackgroundColor),
+      { timeout: 30_000 },
+    )
+    .toBe(BACKGROUND);
+
+  await context.close();
+});

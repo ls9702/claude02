@@ -103,6 +103,9 @@ export function differsFromIncoming(
 /**
  * 저장해도 되는 appState 키 화이트리스트.
  * 뷰포트(scrollX/scrollY/zoom)·선택 상태·툴 상태는 사용자마다 다르므로 저장하지 않는다.
+ *
+ * ⚠️ 프론트 `frontend/src/canvas/appState.ts` 의 `SHARED_APP_STATE_KEYS` 와 **같은 목록**을 유지해야 한다.
+ * (프론트는 요소 변경이 없어도 이 키들이 바뀌면 저장을 걸도록 같은 목록으로 비교한다.)
  */
 export const SHARED_APP_STATE_KEYS = [
   "viewBackgroundColor",

@@ -1,11 +1,11 @@
 import type { FastifyInstance } from "fastify";
-import { SESSION_COOKIE } from "../config.js";
+import { LOGIN_RATE_LIMIT, SESSION_COOKIE } from "../config.js";
 import { badRequest, unauthorized } from "../errors.js";
 import { nowIso } from "../ids.js";
 import { toPublicUser } from "../types.js";
 import { asObject, requireString } from "../validate.js";
 import { requireAuth, sessionCookieOptions } from "./plugin.js";
-import { checkPasswordPolicy, hashPassword, verifyPassword } from "./passwords.js";
+import { DUMMY_PASSWORD_HASH, checkPasswordPolicy, hashPassword, verifyPassword } from "./passwords.js";
 import {
   createAuthSession,
   deleteAuthSession,
@@ -19,8 +19,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     {
       config: {
         rateLimit: {
-          max: 10,
-          timeWindow: "1 minute",
+          max: LOGIN_RATE_LIMIT.max,
+          timeWindow: LOGIN_RATE_LIMIT.timeWindow,
           errorResponseBuilder: () => ({
             statusCode: 429,
             error: { code: "rate_limited", message: "로그인 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요." },
@@ -34,7 +34,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       const password = requireString(body, "password", "비밀번호", { max: 200 });
 
       const user = findUserByUsername(app.db, username);
-      const ok = user ? await verifyPassword(password, user.password_hash) : false;
+      // 사용자가 없어도 더미 해시로 비교해 응답 시간을 맞춘다 (계정 존재 여부 열거 방지).
+      const ok = await verifyPassword(password, user ? user.password_hash : DUMMY_PASSWORD_HASH);
       if (!user || !ok) {
         throw unauthorized("아이디 또는 비밀번호가 올바르지 않습니다.", "invalid_credentials");
       }

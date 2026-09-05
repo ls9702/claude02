@@ -125,4 +125,38 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_comment_replies_comment ON comment_replies(comment_id);
     `,
   },
+  {
+    version: 2,
+    name: "page_files_link",
+    sql: `
+      -- 파일 소유권 모델 변경:
+      -- 같은 이미지(같은 Excalidraw fileId)를 여러 페이지에서 쓸 수 있어야 하므로
+      -- files 의 page_id 컬럼을 없애고 page_files 링크 테이블로 다대다 관계를 표현한다.
+      -- 기존 files 행은 그대로 링크 1개로 옮기고, path 컬럼은 유지한다
+      -- (이미 저장된 파일은 디스크에서 옮기지 않는다. 새 업로드만 files/<fileId> 에 저장).
+      CREATE TABLE page_files (
+        page_id TEXT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+        file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (page_id, file_id)
+      );
+      INSERT OR IGNORE INTO page_files (page_id, file_id, created_at)
+        SELECT page_id, id, created_at FROM files;
+      CREATE INDEX idx_page_files_file ON page_files(file_id);
+
+      CREATE TABLE files_new (
+        id TEXT PRIMARY KEY,
+        mime TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT
+      );
+      INSERT INTO files_new (id, mime, size, path, created_at, created_by)
+        SELECT id, mime, size, path, created_at, created_by FROM files;
+      DROP INDEX IF EXISTS idx_files_page;
+      DROP TABLE files;
+      ALTER TABLE files_new RENAME TO files;
+    `,
+  },
 ];

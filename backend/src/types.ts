@@ -51,9 +51,9 @@ export interface SceneRow {
   updated_by: string | null;
 }
 
+/** 파일은 페이지에 직접 속하지 않고 `page_files` 링크로 여러 페이지와 연결된다. */
 export interface FileRow {
   id: string;
-  page_id: string;
   mime: string;
   size: number;
   path: string;
@@ -79,6 +79,12 @@ export const toPublicUser = (row: UserRow): PublicUser => ({
   must_change_password: row.must_change_password === 1,
   created_at: row.created_at,
 });
+
+export interface PageFileRow {
+  page_id: string;
+  file_id: string;
+  created_at: string;
+}
 
 export interface PublicPage {
   id: string;

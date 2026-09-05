@@ -1,13 +1,14 @@
 import { createReadStream } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { assertWritable, requirePageAccess } from "../access.js";
 import { requireAuth } from "../auth/plugin.js";
 import { MAX_FILE_BYTES } from "../config.js";
-import { badRequest, notFound, payloadTooLarge } from "../errors.js";
+import { badRequest, forbidden, notFound, payloadTooLarge } from "../errors.js";
 import { nowIso } from "../ids.js";
 import type { FileRow } from "../types.js";
+import { canAccessFile, filePathFor } from "./storage.js";
 
 interface IdParams {
   id: string;
@@ -64,26 +65,35 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
     const mime = fields.mime || detectedMime || "";
     if (!ALLOWED_MIME.has(mime)) throw badRequest("지원하지 않는 이미지 형식입니다.");
 
+    const link = app.db.prepare(
+      "INSERT OR IGNORE INTO page_files (page_id, file_id, created_at) VALUES (?, ?, ?)",
+    );
+
     const existing = app.db
       .prepare<[string], FileRow>("SELECT * FROM files WHERE id = ?")
       .get(fileId);
     if (existing) {
-      // 같은 fileId 는 같은 내용이다 (Excalidraw 가 내용 해시로 만든다) — 중복 저장하지 않는다.
+      // 같은 fileId 는 같은 내용이다 (Excalidraw 가 내용 해시로 만든다).
+      // 파일은 다시 저장하지 않고, 이 페이지와의 링크만 추가한다.
+      link.run(page.id, existing.id, nowIso());
       reply.code(200);
       return { id: existing.id, deduplicated: true };
     }
 
-    const dir = join(app.config.dataDir, "files", page.id);
-    await mkdir(dir, { recursive: true });
-    const absolute = join(dir, fileId);
+    const relative = filePathFor(fileId);
+    const absolute = join(app.config.dataDir, relative);
+    await mkdir(dirname(absolute), { recursive: true });
     await writeFile(absolute, buffer);
 
-    const relative = join("files", page.id, fileId);
-    app.db
-      .prepare(
-        "INSERT INTO files (id, page_id, mime, size, path, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      )
-      .run(fileId, page.id, mime, buffer.length, relative, nowIso(), req.user!.id);
+    const at = nowIso();
+    app.db.transaction(() => {
+      app.db
+        .prepare(
+          "INSERT INTO files (id, mime, size, path, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .run(fileId, mime, buffer.length, relative, at, req.user!.id);
+      link.run(page.id, fileId, at);
+    })();
 
     reply.code(201);
     return { id: fileId, deduplicated: false };
@@ -96,8 +106,10 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
     const row = app.db.prepare<[string], FileRow>("SELECT * FROM files WHERE id = ?").get(fileId);
     if (!row) throw notFound("파일을 찾을 수 없습니다.");
 
-    // 파일이 속한 페이지에 접근 권한이 있어야 한다.
-    requirePageAccess(app.db, req.user!, row.page_id);
+    // 이 파일과 링크된 페이지 중 하나라도 접근할 수 있으면 통과한다.
+    if (!canAccessFile(app.db, req.user!, fileId)) {
+      throw forbidden("이 파일에 접근할 권한이 없습니다.");
+    }
 
     reply.header("Content-Type", row.mime);
     reply.header("Content-Length", String(row.size));

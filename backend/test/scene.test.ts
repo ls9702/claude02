@@ -79,6 +79,31 @@ describe("씬 저장/불러오기", () => {
     expect(res.json().changed).toBe(false);
   });
 
+  it("요소가 그대로여도 appState 만 바꾸면 저장되고 버전이 오른다", async () => {
+    const element = { id: "keep-1", version: 1, versionNonce: 10 };
+    const first = await putScene([element], { viewBackgroundColor: "#ffffff" });
+    expect(first.statusCode).toBe(200);
+    const firstVersion = first.json().version as number;
+
+    const second = await putScene([element], { viewBackgroundColor: "#7b3de7", gridModeEnabled: true });
+    expect(second.statusCode).toBe(200);
+    expect(second.json().version).toBe(firstVersion + 1);
+    expect(second.json().appState).toMatchObject({
+      viewBackgroundColor: "#7b3de7",
+      gridModeEnabled: true,
+    });
+
+    const scene = (
+      await ctx.app.inject({
+        method: "GET",
+        url: `/api/pages/${pageId}/scene`,
+        headers: authHeaders(sid),
+      })
+    ).json();
+    expect(scene.appState.viewBackgroundColor).toBe("#7b3de7");
+    expect(scene.appState.gridModeEnabled).toBe(true);
+  });
+
   it("appState 는 공유 가능한 키만 저장한다", async () => {
     await putScene([], { viewBackgroundColor: "#ffeedd", scrollX: 999, selectedElementIds: { a: true } });
     const scene = (await ctx.app.inject({ method: "GET", url: `/api/pages/${pageId}/scene`, headers: authHeaders(sid) })).json();

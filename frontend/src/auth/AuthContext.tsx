@@ -1,5 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { api, ApiError, setUnauthorizedHandler, type User } from "../api";
+import {
+  api,
+  ApiError,
+  setPasswordChangeRequiredHandler,
+  setUnauthorizedHandler,
+  type User,
+} from "../api";
 
 interface AuthState {
   user: User | null;
@@ -34,7 +40,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     setUnauthorizedHandler(() => setUser(null));
-    return () => setUnauthorizedHandler(null);
+    // 서버가 강제 비밀번호 변경을 요구하면 라우트 가드가 /password 로 보내도록 플래그를 켠다.
+    setPasswordChangeRequiredHandler(() =>
+      setUser((prev) => (prev && !prev.must_change_password ? { ...prev, must_change_password: true } : prev)),
+    );
+    return () => {
+      setUnauthorizedHandler(null);
+      setPasswordChangeRequiredHandler(null);
+    };
   }, []);
 
   const login = useCallback(async (username: string, password: string) => {

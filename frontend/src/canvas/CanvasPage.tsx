@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, type Page } from "../api";
 import { Spinner } from "../components/Spinner";
 import { MAX_IMAGE_DIMENSION, dataUrlToBlob, resizeDataUrlIfNeeded } from "../utils/image";
+import { pickSharedAppState, sharedAppStateEquals, type SharedAppState } from "./appState";
 
 /** 저장 디바운스 */
 const SAVE_DEBOUNCE_MS = 1500;
@@ -71,6 +72,10 @@ export function CanvasPage({ page, readOnly }: { page: Page; readOnly: boolean }
 
   /** 마지막으로 서버에 반영된 씬 버전 (getSceneVersion) */
   const savedSceneVersion = useRef<number>(-1);
+  /** 마지막으로 서버에 반영된 공유 appState (배경색·그리드 등). null 이면 아직 기준선 없음 */
+  const savedAppState = useRef<SharedAppState | null>(null);
+  /** 서버에서 받아 화면에 반영한 공유 appState (같은 값을 반복 적용하지 않기 위한 기록) */
+  const appliedServerAppState = useRef<SharedAppState | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savingRef = useRef(false);
   const pendingRef = useRef(false);
@@ -89,6 +94,8 @@ export function CanvasPage({ page, readOnly }: { page: Page; readOnly: boolean }
     setInitialData(null);
     setLoadError(null);
     savedSceneVersion.current = -1;
+    savedAppState.current = null;
+    appliedServerAppState.current = null;
     uploadedFiles.current = new Set();
 
     api
@@ -164,14 +171,33 @@ export function CanvasPage({ page, readOnly }: { page: Page; readOnly: boolean }
       }
       const elements = instance.getSceneElementsIncludingDeleted();
       const localVersion = getSceneVersion(elements);
-      if (localVersion === savedSceneVersion.current) return;
+      const appState = instance.getAppState() as unknown as Record<string, unknown>;
+      const localShared = pickSharedAppState(appState);
+      // 요소가 그대로여도 공유 appState(배경색·그리드 등)가 바뀌었으면 저장해야 한다.
+      const appStateDirty =
+        savedAppState.current === null || !sharedAppStateEquals(localShared, savedAppState.current);
+      if (localVersion === savedSceneVersion.current && !appStateDirty) return;
 
       savingRef.current = true;
       setStatus("saving");
       try {
-        const appState = instance.getAppState() as unknown as Record<string, unknown>;
         const result = await api.saveScene(page.id, elements, appState, opts);
         savedSceneVersion.current = localVersion;
+        savedAppState.current = localShared;
+
+        // 서버가 병합해 돌려준 appState 가 로컬과 다르면(다른 사용자가 바꿈) 화면에 반영한다.
+        // 같은 값은 한 번만 적용한다 — 로컬이 그 값을 받아들이지 않을 때 저장 루프가 생기지 않게.
+        const serverShared = pickSharedAppState(result.appState);
+        const alreadyApplied =
+          appliedServerAppState.current !== null &&
+          sharedAppStateEquals(serverShared, appliedServerAppState.current);
+        if (!sharedAppStateEquals(serverShared, localShared) && !alreadyApplied) {
+          appliedServerAppState.current = serverShared;
+          instance.updateScene({
+            appState: serverShared as never,
+            captureUpdate: CaptureUpdateAction.NEVER,
+          });
+        }
 
         if (result.changed) {
           // 다른 사용자의 변경이 병합되어 돌아왔다 → 화면에 반영한다.
@@ -279,11 +305,17 @@ export function CanvasPage({ page, readOnly }: { page: Page; readOnly: boolean }
   );
 
   const onChange = useCallback(
-    (elements: readonly unknown[], _appState: unknown, files: BinaryFiles) => {
+    (elements: readonly unknown[], appState: unknown, files: BinaryFiles) => {
       void syncFiles(files);
       if (readOnlyRef.current) return;
+
+      const shared = pickSharedAppState(appState);
+      // 첫 onChange 값을 기준선으로 삼는다 (불러온 씬의 appState 가 이미 반영된 상태).
+      if (savedAppState.current === null) savedAppState.current = shared;
+
       const version = getSceneVersion(elements as never);
-      if (version === savedSceneVersion.current) return;
+      const appStateChanged = !sharedAppStateEquals(shared, savedAppState.current);
+      if (version === savedSceneVersion.current && !appStateChanged) return;
       scheduleSave();
     },
     [scheduleSave, syncFiles],

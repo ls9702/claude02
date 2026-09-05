@@ -14,7 +14,16 @@ export interface TestApp {
 export const ADMIN_USERNAME = "admin";
 export const ADMIN_PASSWORD = "admin1234";
 
-export async function createTestApp(): Promise<TestApp> {
+export interface TestAppOptions {
+  /**
+   * 부트스트랩 관리자의 `must_change_password` 플래그를 그대로 둘지 여부.
+   * 기본값은 해제 — 대부분의 테스트는 강제 비밀번호 변경 가드와 무관하기 때문이다.
+   * (가드 자체는 auth.test.ts 의 "강제 비밀번호 변경" describe 에서 검증한다.)
+   */
+  keepPasswordChange?: boolean;
+}
+
+export async function createTestApp(options: TestAppOptions = {}): Promise<TestApp> {
   const dataDir = mkdtempSync(join(tmpdir(), "ds118-test-"));
   const base = loadConfig({
     NODE_ENV: "test",
@@ -25,6 +34,11 @@ export async function createTestApp(): Promise<TestApp> {
   });
   const app = await buildServer({ config: { ...base, dataDir }, logger: false });
   await app.ready();
+  if (!options.keepPasswordChange) {
+    app.db
+      .prepare("UPDATE users SET must_change_password = 0 WHERE username = ?")
+      .run(ADMIN_USERNAME);
+  }
   return {
     app,
     dataDir,

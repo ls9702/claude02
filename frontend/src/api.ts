@@ -27,6 +27,23 @@ export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): voi
   onUnauthorized = handler;
 }
 
+type PasswordChangeRequiredHandler = () => void;
+
+let onPasswordChangeRequired: PasswordChangeRequiredHandler | null = null;
+
+/**
+ * 서버가 `must_change_password` 코드로 403 을 주면(비밀번호 변경 전에는 다른 API 를 못 쓴다)
+ * 호출되는 핸들러. 보통 비밀번호 변경 화면(`/password`)으로 보낸다.
+ */
+export function setPasswordChangeRequiredHandler(
+  handler: PasswordChangeRequiredHandler | null,
+): void {
+  onPasswordChangeRequired = handler;
+}
+
+/** 강제 비밀번호 변경을 알리는 서버 오류 코드 */
+export const MUST_CHANGE_PASSWORD_CODE = "must_change_password";
+
 export interface RequestOptions extends Omit<RequestInit, "body"> {
   body?: unknown;
   /** 401 을 받아도 전역 핸들러를 호출하지 않는다 (로그인/me 조회용) */
@@ -72,6 +89,12 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     const code = errBody?.error?.code ?? String(response.status);
     const message = errBody?.error?.message ?? "요청을 처리하지 못했습니다.";
     if (response.status === 401 && !silentUnauthorized) onUnauthorized?.();
+    if (response.status === 403 && code === MUST_CHANGE_PASSWORD_CODE) {
+      if (onPasswordChangeRequired) onPasswordChangeRequired();
+      else if (typeof window !== "undefined" && window.location.pathname !== "/password") {
+        window.location.assign("/password");
+      }
+    }
     throw new ApiError(response.status, code, message);
   }
 

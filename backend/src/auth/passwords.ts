@@ -4,6 +4,12 @@ const ROUNDS = 10;
 
 export const hashPassword = (plain: string): Promise<string> => bcrypt.hash(plain, ROUNDS);
 
+/**
+ * 존재하지 않는 계정으로 로그인 시도가 들어와도 bcrypt 비교를 수행하기 위한 더미 해시
+ * (cost 10). 실제 비밀번호와 일치하지 않으며, 응답 시간을 맞춰 계정 열거를 막는 용도다.
+ */
+export const DUMMY_PASSWORD_HASH = "$2b$10$1upPr2sZjtMPtwleroFbIOcO5a/SS5nUJuMlGZcujtSJC4wzxK5CW";
+
 export const verifyPassword = (plain: string, hash: string): Promise<boolean> =>
   bcrypt.compare(plain, hash);
 

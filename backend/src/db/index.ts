@@ -35,12 +35,21 @@ export function migrate(db: Db): void {
     "INSERT INTO migrations (version, name, applied_at) VALUES (?, ?, ?)",
   );
 
-  for (const migration of MIGRATIONS) {
-    if (applied.has(migration.version)) continue;
-    const run = db.transaction(() => {
-      db.exec(migration.sql);
-      insert.run(migration.version, migration.name, nowIso());
-    });
-    run();
+  const pending = MIGRATIONS.filter((m) => !applied.has(m.version));
+  if (pending.length === 0) return;
+
+  // 테이블 재작성(임시 테이블 → DROP → RENAME)이 있는 마이그레이션을 위해 잠시 FK 를 끈다.
+  // PRAGMA foreign_keys 는 트랜잭션 안에서 무시되므로 반드시 트랜잭션 밖에서 바꾼다.
+  db.pragma("foreign_keys = OFF");
+  try {
+    for (const migration of pending) {
+      const run = db.transaction(() => {
+        db.exec(migration.sql);
+        insert.run(migration.version, migration.name, nowIso());
+      });
+      run();
+    }
+  } finally {
+    db.pragma("foreign_keys = ON");
   }
 }

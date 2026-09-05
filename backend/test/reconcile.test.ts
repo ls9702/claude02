@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  SHARED_APP_STATE_KEYS,
   differsFromIncoming,
   pickSharedAppState,
   pickWinner,
@@ -127,5 +128,19 @@ describe("pickSharedAppState", () => {
     expect(pickSharedAppState(null)).toEqual({});
     expect(pickSharedAppState("x")).toEqual({});
     expect(pickSharedAppState(undefined)).toEqual({});
+  });
+});
+
+describe("공유 appState 키 목록", () => {
+  it("프론트(frontend/src/canvas/appState.ts)와 같은 목록을 유지한다", () => {
+    // 한쪽만 바뀌면 "요소 변경 없이 배경색만 바꾼 경우" 저장이 다시 새는 것을 막기 위한 고정 테스트.
+    expect([...SHARED_APP_STATE_KEYS]).toEqual([
+      "viewBackgroundColor",
+      "gridSize",
+      "gridStep",
+      "gridModeEnabled",
+      "objectsSnapModeEnabled",
+      "name",
+    ]);
   });
 });

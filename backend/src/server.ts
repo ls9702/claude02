@@ -10,7 +10,7 @@ import { authRoutes } from "./auth/routes.js";
 import { bootstrapAdmin, purgeExpiredSessions } from "./auth/service.js";
 import { loadConfig, MAX_FILE_BYTES, MAX_THUMBNAIL_BYTES, type AppConfig } from "./config.js";
 import { openDatabase } from "./db/index.js";
-import { ApiError } from "./errors.js";
+import { ApiError, forbidden } from "./errors.js";
 import { fileRoutes } from "./files/routes.js";
 import { sceneRoutes } from "./scenes/routes.js";
 import { sessionRoutes } from "./sessions/routes.js";
@@ -23,13 +23,33 @@ export interface BuildServerOptions {
 /** SPA fallback 에서 제외할 경로 접두사 */
 const API_PREFIXES = ["/api", "/files", "/ws"];
 
+/** must_change_password=1 인 사용자에게도 허용하는 경로 */
+const PASSWORD_CHANGE_ALLOWED = new Set(["/api/auth/me", "/api/auth/password", "/api/auth/logout"]);
+
+/** 쿼리스트링을 뗀 경로 */
+const pathOf = (url: string): string => url.split("?")[0] ?? url;
+
+/** 강제 비밀번호 변경 가드가 적용되는 경로인지 (`/api/*`, `/files/*`) */
+function isGuardedPath(url: string): boolean {
+  const path = pathOf(url);
+  return path === "/api" || path.startsWith("/api/") || path === "/files" || path.startsWith("/files/");
+}
+
 export async function buildServer(options: BuildServerOptions = {}): Promise<FastifyInstance> {
   const config: AppConfig = { ...loadConfig(), ...options.config };
+
+  // Fastify 타입은 홉 수(number)를 직접 받지 않으므로 proxy-addr 과 같은 의미의 함수로 바꾼다.
+  const trustProxy =
+    typeof config.trustProxy === "number"
+      ? (_address: string, hop: number) => hop < (config.trustProxy as number)
+      : config.trustProxy;
 
   const app = Fastify({
     logger: options.logger ?? (config.nodeEnv !== "test" && { level: config.isProduction ? "info" : "warn" }),
     bodyLimit: 16 * 1024 * 1024,
-    trustProxy: true,
+    // 기본값은 false — X-Forwarded-For 스푸핑으로 IP 별 rate limit 을 우회할 수 없게 한다.
+    // 리버스 프록시 뒤에서는 TRUST_PROXY=1 (또는 프록시 IP/CIDR) 로 켠다.
+    trustProxy,
   });
 
   const db = openDatabase(config.dataDir);
@@ -51,21 +71,42 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     },
   );
 
-  await app.register(fastifyRateLimit, {
-    global: false,
-    max: 10,
-    timeWindow: "1 minute",
-  });
+  // global:false — rate limit 은 라우트에서 config.rateLimit 으로 개별 지정한다.
+  // (한도 값은 config.ts 의 LOGIN_RATE_LIMIT 한 곳에서만 관리한다.)
+  await app.register(fastifyRateLimit, { global: false });
   await app.register(fastifyMultipart, {
     limits: { fileSize: MAX_FILE_BYTES, files: 1, fields: 10 },
   });
   await app.register(authPlugin);
+
+  // 강제 비밀번호 변경: 서버에서도 막는다 (프론트 라우팅에만 의존하지 않는다).
+  app.addHook("onRequest", async (req) => {
+    if (!req.user || req.user.must_change_password !== 1) return;
+    if (!isGuardedPath(req.url)) return;
+    if (PASSWORD_CHANGE_ALLOWED.has(pathOf(req.url))) return;
+    throw forbidden("비밀번호를 변경해야 계속 사용할 수 있습니다.", "must_change_password");
+  });
 
   app.setErrorHandler((raw, req, reply) => {
     const error = raw as Error & { code?: string; statusCode?: number };
     if (error instanceof ApiError) {
       return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message } });
     }
+
+    // @fastify/rate-limit 은 Error 가 아닌 평범한 객체를 throw 한다:
+    // `{ statusCode, error: { code, message } }` (errorResponseBuilder 의 반환값).
+    const thrown = raw as { statusCode?: number; error?: { code?: unknown; message?: unknown } };
+    const custom = thrown.error;
+    if (custom && typeof custom.code === "string" && typeof custom.message === "string") {
+      const customStatus = typeof thrown.statusCode === "number" ? thrown.statusCode : 400;
+      return reply.code(customStatus).send({ error: { code: custom.code, message: custom.message } });
+    }
+    if (thrown.statusCode === 429) {
+      return reply
+        .code(429)
+        .send({ error: { code: "rate_limited", message: "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요." } });
+    }
+
     const code = error.code;
     if (code === "FST_ERR_CTP_BODY_TOO_LARGE" || code === "FST_REQ_FILE_TOO_LARGE") {
       return reply.code(413).send({ error: { code: "payload_too_large", message: "요청 본문이 너무 큽니다." } });

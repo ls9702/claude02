@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { requireAdmin } from "../auth/plugin.js";
 import { checkPasswordPolicy, hashPassword } from "../auth/passwords.js";
 import { createUser, deleteAuthSessionsForUser, findUserById, findUserByUsername } from "../auth/service.js";
+import { fileIdsForPages, pageIdsForSession, pruneOrphanFiles } from "../files/storage.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { newId, nowIso } from "../ids.js";
 import type { PageRow, SessionRow, UserRow } from "../types.js";
@@ -167,8 +168,12 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.delete<{ Params: IdParams }>("/api/admin/sessions/:id", async (req) => {
+    // 세션이 지워지면 페이지와 page_files 링크가 cascade 로 사라진다.
+    // 링크가 하나도 남지 않은 파일은 디스크에서도 지운다.
+    const candidates = fileIdsForPages(app.db, pageIdsForSession(app.db, req.params.id));
     const result = app.db.prepare("DELETE FROM sessions WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw notFound("세션을 찾을 수 없습니다.");
+    await pruneOrphanFiles(app.db, app.config.dataDir, candidates);
     return { ok: true };
   });
 

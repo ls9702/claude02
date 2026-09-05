@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SESSION_TOUCH_INTERVAL_MS, SESSION_TTL_MS } from "../src/config.js";
+import { SESSION_TOUCH_INTERVAL_MS, SESSION_TTL_MS, loadConfig, parseTrustProxy } from "../src/config.js";
 import { ADMIN_PASSWORD, ADMIN_USERNAME, authHeaders, createTestApp, extractCookie, login, type TestApp } from "./helpers.js";
 
 let ctx: TestApp;
@@ -13,15 +13,24 @@ afterEach(async () => {
 
 describe("부트스트랩", () => {
   it("최초 기동 시 관리자 계정을 만들고 비밀번호 변경을 강제한다", async () => {
-    const sid = await login(ctx.app, ADMIN_USERNAME, ADMIN_PASSWORD);
-    const res = await ctx.app.inject({ method: "GET", url: "/api/auth/me", headers: authHeaders(sid) });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().user).toMatchObject({
-      username: ADMIN_USERNAME,
-      role: "admin",
-      must_change_password: true,
-      ai_allowed: true,
-    });
+    const fresh = await createTestApp({ keepPasswordChange: true });
+    try {
+      const sid = await login(fresh.app, ADMIN_USERNAME, ADMIN_PASSWORD);
+      const res = await fresh.app.inject({
+        method: "GET",
+        url: "/api/auth/me",
+        headers: authHeaders(sid),
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().user).toMatchObject({
+        username: ADMIN_USERNAME,
+        role: "admin",
+        must_change_password: true,
+        ai_allowed: true,
+      });
+    } finally {
+      await fresh.close();
+    }
   });
 
   it("ADMIN_PASSWORD 가 없으면 기동에 실패한다", async () => {
@@ -124,6 +133,150 @@ describe("로그인 / 쿠키", () => {
     }
     expect(codes.filter((c) => c === 401)).toHaveLength(10);
     expect(codes.filter((c) => c === 429)).toHaveLength(2);
+  });
+
+  it("X-Forwarded-For 를 바꿔가며 시도해도 rate limit 을 우회할 수 없다", async () => {
+    // TRUST_PROXY 기본값(false)에서는 XFF 를 신뢰하지 않으므로 실제 소켓 주소로 카운트된다.
+    const attempt = (forwarded: string) =>
+      ctx.app.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        headers: { "x-forwarded-for": forwarded },
+        payload: { username: ADMIN_USERNAME, password: "wrong-password" },
+        remoteAddress: "10.1.2.3",
+      });
+
+    const codes: number[] = [];
+    for (let i = 0; i < 11; i += 1) {
+      codes.push((await attempt(`9.9.9.${i + 1}`)).statusCode);
+    }
+    expect(codes.slice(0, 10).every((c) => c === 401)).toBe(true);
+    expect(codes[10]).toBe(429);
+  });
+
+  it("rate limit 응답 본문은 rate_limited 코드와 한국어 메시지를 준다", async () => {
+    let last = await ctx.app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: ADMIN_USERNAME, password: "wrong-password" },
+      remoteAddress: "10.4.5.6",
+    });
+    for (let i = 0; i < 10; i += 1) {
+      last = await ctx.app.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { username: ADMIN_USERNAME, password: "wrong-password" },
+        remoteAddress: "10.4.5.6",
+      });
+    }
+    expect(last.statusCode).toBe(429);
+    expect(last.json().error.code).toBe("rate_limited");
+    expect(last.json().error.message).toContain("로그인 시도가 너무 많습니다");
+  });
+
+  it("존재하지 않는 계정도 bcrypt 비교를 수행해 응답 시간이 비슷하다", async () => {
+    const measure = async (username: string): Promise<number> => {
+      const started = performance.now();
+      const res = await ctx.app.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { username, password: "definitely-wrong-password" },
+        remoteAddress: `10.7.7.${Math.floor(Math.random() * 200) + 1}`,
+      });
+      expect(res.statusCode).toBe(401);
+      return performance.now() - started;
+    };
+
+    // 워밍업 (JIT 편차 완화)
+    await measure(ADMIN_USERNAME);
+    const known = await measure(ADMIN_USERNAME);
+    const unknown = await measure("no-such-user-here");
+
+    // 더미 해시 비교를 하지 않으면 미존재 계정은 1~2ms 로 끝나 큰 차이가 난다.
+    expect(unknown).toBeGreaterThan(known * 0.4);
+  });
+});
+
+describe("TRUST_PROXY 설정", () => {
+  it("환경변수를 안전한 기본값으로 해석한다", () => {
+    expect(parseTrustProxy(undefined)).toBe(false);
+    expect(parseTrustProxy("")).toBe(false);
+    expect(parseTrustProxy("0")).toBe(false);
+    expect(parseTrustProxy("false")).toBe(false);
+    expect(parseTrustProxy("1")).toBe(1);
+    expect(parseTrustProxy("true")).toBe(1);
+    expect(parseTrustProxy("2")).toBe(2);
+    expect(parseTrustProxy("127.0.0.1,10.0.0.0/8")).toBe("127.0.0.1,10.0.0.0/8");
+    expect(loadConfig({}).trustProxy).toBe(false);
+  });
+});
+
+describe("강제 비밀번호 변경 (서버 강제)", () => {
+  it("must_change_password 사용자는 me/password/logout 외 API 가 403", async () => {
+    const fresh = await createTestApp({ keepPasswordChange: true });
+    try {
+      const sid = await login(fresh.app, ADMIN_USERNAME, ADMIN_PASSWORD);
+
+      const me = await fresh.app.inject({ method: "GET", url: "/api/auth/me", headers: authHeaders(sid) });
+      expect(me.statusCode).toBe(200);
+
+      const sessions = await fresh.app.inject({
+        method: "GET",
+        url: "/api/sessions",
+        headers: authHeaders(sid),
+      });
+      expect(sessions.statusCode).toBe(403);
+      expect(sessions.json().error.code).toBe("must_change_password");
+
+      const admin = await fresh.app.inject({
+        method: "GET",
+        url: "/api/admin/users",
+        headers: authHeaders(sid),
+      });
+      expect(admin.statusCode).toBe(403);
+      expect(admin.json().error.code).toBe("must_change_password");
+
+      const file = await fresh.app.inject({
+        method: "GET",
+        url: "/files/whatever",
+        headers: authHeaders(sid),
+      });
+      expect(file.statusCode).toBe(403);
+      expect(file.json().error.code).toBe("must_change_password");
+
+      // 비밀번호를 바꾸면 곧바로 정상 사용할 수 있다.
+      const changed = await fresh.app.inject({
+        method: "POST",
+        url: "/api/auth/password",
+        headers: authHeaders(sid),
+        payload: { currentPassword: ADMIN_PASSWORD, newPassword: "changed1234" },
+      });
+      expect(changed.statusCode).toBe(200);
+      const newSid = extractCookie(changed.headers)!;
+      const after = await fresh.app.inject({
+        method: "GET",
+        url: "/api/sessions",
+        headers: authHeaders(newSid),
+      });
+      expect(after.statusCode).toBe(200);
+    } finally {
+      await fresh.close();
+    }
+  });
+
+  it("로그아웃은 비밀번호 변경 전에도 허용된다", async () => {
+    const fresh = await createTestApp({ keepPasswordChange: true });
+    try {
+      const sid = await login(fresh.app, ADMIN_USERNAME, ADMIN_PASSWORD);
+      const res = await fresh.app.inject({
+        method: "POST",
+        url: "/api/auth/logout",
+        headers: authHeaders(sid),
+      });
+      expect(res.statusCode).toBe(200);
+    } finally {
+      await fresh.close();
+    }
   });
 });
 

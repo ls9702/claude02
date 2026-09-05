@@ -235,6 +235,57 @@ describe("페이지 CRUD / 순서", () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it("중복된 id 로 다른 페이지를 빠뜨린 순서 요청은 400 (정확한 순열만 허용)", async () => {
+    const p2 = (
+      await ctx.app.inject({
+        method: "POST",
+        url: `/api/sessions/${fx.s1}/pages`,
+        headers: authHeaders(fx.sidA),
+        payload: { name: "두 번째", type: "canvas" },
+      })
+    ).json().page as { id: string };
+
+    const before = (
+      await ctx.app.inject({
+        method: "GET",
+        url: `/api/sessions/${fx.s1}`,
+        headers: authHeaders(fx.sidA),
+      })
+    ).json().pages as Array<{ id: string; position: number }>;
+
+    // 길이는 같지만 fx.pageS1 이 두 번, p2 는 빠졌다.
+    const res = await ctx.app.inject({
+      method: "PUT",
+      url: `/api/sessions/${fx.s1}/pages/order`,
+      headers: authHeaders(fx.sidA),
+      payload: { pageIds: [fx.pageS1, fx.pageS1] },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toContain("현재 세션과 일치하지 않습니다");
+
+    // position 이 손상되지 않았는지 확인 (0..N-1 유일)
+    const after = (
+      await ctx.app.inject({
+        method: "GET",
+        url: `/api/sessions/${fx.s1}`,
+        headers: authHeaders(fx.sidA),
+      })
+    ).json().pages as Array<{ id: string; position: number }>;
+    expect(after.map((p) => p.position)).toEqual(before.map((p) => p.position));
+    expect(new Set(after.map((p) => p.position)).size).toBe(after.length);
+    expect(after.map((p) => p.id).sort()).toEqual([fx.pageS1, p2.id].sort());
+  });
+
+  it("세션에 없는 페이지 id 가 섞이면 400", async () => {
+    const res = await ctx.app.inject({
+      method: "PUT",
+      url: `/api/sessions/${fx.s1}/pages/order`,
+      headers: authHeaders(fx.sidA),
+      payload: { pageIds: [fx.pageS2] },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
   it("룸 정보는 멤버에게만 준다", async () => {
     const ok = await ctx.app.inject({
       method: "GET",
