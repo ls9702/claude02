@@ -157,7 +157,25 @@ M5에서 실측으로 확인한 `@fortune-sheet/react` 1.0.4 의 성질이다. �
   `[A-Za-z_][A-Za-z_0-9]*` 라 `장부!D2:D201` 은 `#ERROR!` 가 되고, `'장부'!D2` 는 문자열로 잘못 파싱된다.
   → 한글 시트 이름을 지키기 위해 **월별 요약을 같은 시트의 오른쪽 블록(I~L)** 으로 두었다.
 - **`TEXT(날짜,"yyyy-mm")` 은 `#ERROR!`** 다(텍스트 날짜·직렬값 모두). 날짜 열을 텍스트 서식으로 고정하고
-  `LEFT(A2,7)` 로 월을 뽑는다.
+  `LEFT(SUBSTITUTE(SUBSTITUTE(A2,"/","-"),".","-"),7)` 로 월을 뽑는다
+  (`2026/03/10`·`2026.03.10` 표기도 흡수한다 — m5 수정 라운드 1).
+- **합계 범위에 문자가 섞이면 `SUMIF`/`SUMIFS` 가 조용히 문자열 결합으로 바뀐다.** 숫자를 더하다가
+  문자 셀을 만나는 순간 조건을 무시하고 범위 전체를 이어붙여
+  `"50000오만원010000…"` 같은 값을 만든다. 이 값이 뺄셈에 들어가면 앞부분 숫자만 잘려
+  **에러 표시 없이 그럴듯한 틀린 잔액**이 된다(검증 리포트 Finding 1). 그래서 장부 템플릿은
+  금액을 직접 더하지 않고 **숫자 보조 열 `H=IF(ISNUMBER(D2),D2,0)`** 를 거쳐 더한다.
+- **배열 연산을 지원하지 않는다.** `SUMPRODUCT((B2:B201="수입")*ISNUMBER(D2:D201)*D2:D201)` 은
+  `#VALUE!` 이고, 인수가 하나뿐인 `SUMPRODUCT(D2:D201)` 도 `#VALUE!` 다
+  (쉼표로 나눈 `SUMPRODUCT(H2:H201,H2:H201)` 은 동작한다). `N()` 은 `#ERROR!`,
+  `IFERROR(1/0,…)` 는 대체값 대신 `DIV/0` 를 돌려준다.
+  문자 혼입 감지는 배열식 대신 **`COUNTA(D2:D201)-COUNT(D2:D201)`** 로 센다.
+  `ISNUMBER`·`COUNT`·`COUNTA`·`SUBSTITUTE` 는 정상 동작한다(모두 헤드리스 브라우저 실측).
+- **데이터 유효성(`dataVerification`)의 `prohibitInput: true` 는 실제로 입력을 되돌려 주지만
+  안내창이 영어다.** 게다가 `type2` 가 없으면 "what you entered is not a Number undefined" 처럼
+  문장이 깨진다. 그래서 규칙(`type`)과 선택 시 뜨는 한국어 힌트(`hintValue`)만 시트에 남기고,
+  되돌리는 일은 프런트의 `hooks.beforeUpdateCell`(`frontend/src/sheet/validation.ts`)이 한다.
+  이 훅은 **직접 타이핑에만** 걸린다 — 붙여넣기·xlsx 가져오기는 이 경로를 타지 않아서
+  위의 보조 열·경고 셀 방어가 함께 필요하다.
 - **조건부 서식의 수식 조건(`conditionName: "formula"`)은 쓸 수 없다.** 렌더 도중 얼어 있는 context 에
   쓰려다 예외가 나 시트 전체가 죽는다. 값 비교 규칙(`textContains`)으로 "구분" 열만 칠한다.
 - **`calculateFormula()` 를 시트 id 없이 부르면 다른 시트의 수식을 활성 시트 좌표에 계산해 값을 덮어쓴다.**

@@ -242,7 +242,7 @@ export async function deleteElement(page: Page, elementId: string): Promise<void
 // ---- 시트 (M5) ----------------------------------------------------------
 
 /** 회비 장부 템플릿의 열 너비(px) — `backend/src/sheets/templates.ts` 와 같은 값이어야 한다. */
-const LEDGER_COLUMN_WIDTHS = [100, 70, 190, 110, 90, 200, 90, 24, 90, 100, 100, 100];
+const LEDGER_COLUMN_WIDTHS = [130, 70, 190, 110, 90, 200, 90, 90, 90, 100, 100, 100];
 /** Fortune-sheet 기본 행 높이(px)와 장부 템플릿의 머리글 행 높이(rowlen[0]) */
 const ROW_HEIGHT = 20;
 const FIRST_ROW_HEIGHT = 24;

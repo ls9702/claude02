@@ -9,12 +9,14 @@ import {
   type TestApp,
 } from "./helpers.js";
 import {
+  AMOUNT_WARNING_TEXT,
   buildSheetDoc,
   SHEET_ENGINE,
   SHEET_ENGINE_VERSION,
   type TemplateCellData,
 } from "../src/sheets/templates.js";
 import { MAX_SHEETS } from "../src/sheets/service.js";
+import { MAX_BAD_OPS_PER_WINDOW } from "../src/sheets/ws.js";
 
 let ctx: TestApp;
 let adminSid: string;
@@ -186,29 +188,78 @@ describe("템플릿", () => {
     expect(sheet.name).toBe("장부");
     const formulas = sheet.celldata.filter((c: TemplateCellData) => c.v.f).map((c) => c.v.f!);
 
-    // 합계 3종
-    expect(formulas).toContain('=SUMIF(B2:B201,"수입",D2:D201)');
-    expect(formulas).toContain('=SUMIF(B2:B201,"지출",D2:D201)');
+    // 합계 3종 — 금액 열(D)이 아니라 **숫자 보조 열(H)** 을 더한다.
+    expect(formulas).toContain('=SUMIF(B2:B201,"수입",H2:H201)');
+    expect(formulas).toContain('=SUMIF(B2:B201,"지출",H2:H201)');
     expect(formulas).toContain("=D204-D205");
-    // 월별 요약 (같은 시트 SUMIFS + 월 보조 열)
+    // 월별 요약 (같은 시트 SUMIFS + 월 보조 열 + 숫자 보조 열)
     expect(formulas).toContain(
-      '=SUMIFS($D$2:$D$201,$B$2:$B$201,"수입",$G$2:$G$201,$I2)',
+      '=SUMIFS($H$2:$H$201,$B$2:$B$201,"수입",$G$2:$G$201,$I2)',
     );
     expect(formulas).toContain(
-      '=SUMIFS($D$2:$D$201,$B$2:$B$201,"지출",$G$2:$G$201,$I13)',
+      '=SUMIFS($H$2:$H$201,$B$2:$B$201,"지출",$G$2:$G$201,$I13)',
     );
     // 월 보조 열 (TEXT() 대신 LEFT())
-    expect(formulas).toContain('=IF(A2="","",LEFT(A2,7))');
+    expect(formulas).toContain('=IF(A2="","",LEFT(SUBSTITUTE(SUBSTITUTE(A2,"/","-"),".","-"),7))');
     expect(formulas.some((f) => f.includes("TEXT("))).toBe(false);
     // 시트 간 참조는 쓰지 않는다 (한글 시트 이름은 이 엔진의 수식 파서가 못 읽는다).
     expect(formulas.some((f) => f.includes("장부!"))).toBe(false);
+  });
+
+  /**
+   * 회귀: 검증 리포트 Finding 1 (치명).
+   * 금액 열(D)에 문자가 하나라도 섞이면 이 엔진의 SUMIF 는 조건을 무시하고 범위를
+   * 문자열로 이어붙여 잔액이 **에러 표시 없이** 틀어졌다. 합계가 D 를 직접 더하지
+   * 않는지(=숫자 보조 열 H 를 거치는지)를 못으로 박아 둔다.
+   */
+  it("합계·월별 요약은 금액 열을 직접 더하지 않는다 (문자 오염 방지)", () => {
+    const sheet = buildSheetDoc("ledger", new Date("2026-03-02T00:00:00Z")).sheets[0]!;
+    const at = (r: number, c: number) => sheet.celldata.find((x) => x.r === r && x.c === c)?.v;
+
+    // 숫자 보조 열 H: 문자는 0 으로 떨어뜨린다.
+    expect(at(1, 7)?.f).toBe("=IF(ISNUMBER(D2),D2,0)");
+    expect(at(200, 7)?.f).toBe("=IF(ISNUMBER(D201),D201,0)");
+    expect(at(0, 7)?.v).toBe("금액(숫자)");
+
+    // 합계·월별 요약 어디에도 D2:D201 을 더하는 수식이 없어야 한다.
+    const aggregates = sheet.celldata
+      .filter((c) => c.v.f && /SUMIFS?\(/.test(c.v.f))
+      .map((c) => c.v.f!);
+    expect(aggregates.length).toBe(2 + 24);
+    for (const f of aggregates) {
+      expect(f).not.toMatch(/D\$?2:\$?D?\$?201/);
+      expect(f).toMatch(/H\$?2/);
+    }
+  });
+
+  /** 회귀: 검증 리포트 Finding 1 — 3차 방어(경고 셀) */
+  it("금액 열에 문자가 있으면 알리는 경고 셀이 합계 옆(E204)에 있다", () => {
+    const sheet = buildSheetDoc("ledger", new Date("2026-03-02T00:00:00Z")).sheets[0]!;
+    const warning = sheet.celldata.find((x) => x.r === 203 && x.c === 4)?.v;
+    expect(warning?.f).toBe(
+      `=IF(COUNTA(D2:D201)-COUNT(D2:D201)>0,"${AMOUNT_WARNING_TEXT}","")`,
+    );
+    // 배열식(SUMPRODUCT)은 이 엔진에서 #VALUE! 라 쓰지 않는다.
+    expect(warning?.f).not.toContain("SUMPRODUCT");
+  });
+
+  /**
+   * 회귀: 검증 리포트 Finding 2 (중간).
+   * `2026/03/10`·`2026.03.10` 을 그냥 LEFT 로 자르면 `2026/03` 이 되어
+   * 월별 요약(SUMIFS)에서 조용히 빠졌다.
+   */
+  it("월 보조 열은 슬래시·점 날짜도 yyyy-MM 으로 바꾼다", () => {
+    const sheet = buildSheetDoc("ledger", new Date("2026-03-02T00:00:00Z")).sheets[0]!;
+    const at = (r: number, c: number) => sheet.celldata.find((x) => x.r === r && x.c === c)?.v;
+    expect(at(9, 6)?.f).toBe('=IF(A10="","",LEFT(SUBSTITUTE(SUBSTITUTE(A10,"/","-"),".","-"),7))');
+    expect(at(0, 0)?.v).toBe("날짜(yyyy-MM-dd)");
   });
 
   it("장부 템플릿에 드롭다운·머리글·샘플 3행이 들어 있다", () => {
     const sheet = buildSheetDoc("ledger", new Date("2026-03-02T00:00:00Z")).sheets[0]!;
     const at = (r: number, c: number) => sheet.celldata.find((x) => x.r === r && x.c === c)?.v;
 
-    expect(at(0, 0)?.v).toBe("날짜");
+    expect(at(0, 0)?.v).toBe("날짜(yyyy-MM-dd)");
     expect(at(0, 3)?.v).toBe("금액");
     expect(at(0, 8)?.v).toBe("월");
     expect(at(1, 1)?.v).toBe("수입");
@@ -219,7 +270,23 @@ describe("템플릿", () => {
     expect(at(1, 0)?.v).toBe("2026-01-05");
     // 구분 열 드롭다운
     expect(sheet.dataVerification?.["1_1"]).toMatchObject({ type: "dropdown", value1: "수입,지출" });
-    expect(Object.keys(sheet.dataVerification ?? {})).toHaveLength(200);
+  });
+
+  /** 회귀: 검증 리포트 Finding 1·2 — 1차 방어(입력 유효성) */
+  it("날짜 열은 날짜, 금액 열은 숫자 유효성을 200행 모두에 건다", () => {
+    const sheet = buildSheetDoc("ledger", new Date("2026-03-02T00:00:00Z")).sheets[0]!;
+    const dv = sheet.dataVerification ?? {};
+    // 200행 × 3열(날짜·구분·금액)
+    expect(Object.keys(dv)).toHaveLength(600);
+    for (const r of [1, 100, 200]) {
+      expect(dv[`${r}_0`]).toMatchObject({ type: "date", hintShow: true });
+      expect(dv[`${r}_3`]).toMatchObject({ type: "number", hintShow: true });
+      // 안내 문구는 한국어로 우리가 넣는다 (엔진 기본 문구는 영어라서).
+      expect(String((dv[`${r}_0`] as { hintValue: string }).hintValue)).toContain("yyyy-MM-dd");
+      expect(String((dv[`${r}_3`] as { hintValue: string }).hintValue)).toContain("숫자만");
+    }
+    // 되돌리는 일은 프런트(hooks.beforeUpdateCell)가 한다 — 엔진 안내창이 영어라서다.
+    expect(dv["1_3"]).toMatchObject({ prohibitInput: false });
   });
 
   it("빈 시트 템플릿은 시트 한 장만 만든다", () => {
@@ -463,6 +530,51 @@ describe("/ws/sheet/:pageId", () => {
     a.socket.send(JSON.stringify({ type: "op", ops: [{ nope: true }] }));
     const err = await a.waitFor("error");
     expect(err.code).toBe("bad_op");
+    a.close();
+  });
+
+  /**
+   * 회귀: 검증 리포트 WS 절 [Low] — bad_op 를 계속 쏟아부어도 서버가 에러만 돌려주며
+   * 소켓을 살려 두면 같은 클라이언트가 무한히 재시도할 수 있다.
+   */
+  it("bad_op 를 분당 상한보다 많이 보내면 소켓을 끊는다", async () => {
+    const a = await subscribe(fx.ledgerPageId, fx.sidA);
+    const b = await subscribe(fx.ledgerPageId, fx.sidB);
+    await a.waitFor("ready");
+    await b.waitFor("ready");
+
+    const closed = new Promise<number>((resolve) => a.socket.on("close", resolve));
+    for (let i = 0; i < MAX_BAD_OPS_PER_WINDOW + 1; i += 1) {
+      a.socket.send(JSON.stringify({ type: "op", ops: [{ nope: true }] }));
+    }
+    await a.waitFor("error");
+    await closed;
+    const codes = a.events.filter((e) => e.type === "error").map((e) => e.payload.code);
+    expect(codes.filter((c) => c === "bad_op")).toHaveLength(MAX_BAD_OPS_PER_WINDOW);
+    expect(codes.at(-1)).toBe("too_many_bad_ops");
+
+    // 다른 접속자는 멀쩡하다 (끊긴 소켓은 정리되고 Bob 만 남는다).
+    for (let i = 0; i < 100 && ctx.app.sheetSockets.countForPage(fx.ledgerPageId) > 1; i += 1) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(ctx.app.sheetSockets.countForPage(fx.ledgerPageId)).toBe(1);
+    b.socket.send(
+      JSON.stringify({ type: "op", ops: [{ op: "replace", path: ["celldata"], value: 1 }] }),
+    );
+    b.close();
+  });
+
+  it("상한 안쪽의 bad_op 는 끊지 않는다", async () => {
+    const a = await subscribe(fx.ledgerPageId, fx.sidA);
+    await a.waitFor("ready");
+    for (let i = 0; i < MAX_BAD_OPS_PER_WINDOW; i += 1) {
+      a.socket.send(JSON.stringify({ type: "op", ops: [{ nope: true }] }));
+    }
+    await a.waitFor("error");
+    // 연결이 살아 있고 정상 op 는 계속 중계된다.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(a.socket.readyState).toBe(1);
+    expect(a.events.every((e) => e.payload?.code !== "too_many_bad_ops")).toBe(true);
     a.close();
   });
 

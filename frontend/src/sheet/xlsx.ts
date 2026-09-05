@@ -219,8 +219,35 @@ export function workbookToBytes(wb: XLSX.WorkBook): Uint8Array {
   return XLSX.write(wb, { bookType: "xlsx", type: "array" }) as Uint8Array;
 }
 
-/** 바이트 → 워크북 */
+/**
+ * xlsx 파일의 zip 시그니처(`PK\x03\x04`).
+ *
+ * xlsx 는 zip 컨테이너라 모든 정상 파일이 이 4바이트로 시작한다.
+ * SheetJS 는 형식을 **관대하게 자동 판별**해서, 확장자만 `.xlsx` 인 평범한 텍스트·CSV 도
+ * 예외 없이 워크북으로 읽어 버린다(검증 리포트 Finding 4). 그러면 "읽지 못했습니다" 라는
+ * 안전한 오류 경로를 지나쳐 장부가 알아보기 힘든 내용으로 조용히 덮어써진다.
+ * 그래서 **읽기 전에 시그니처부터 본다**.
+ */
+const ZIP_SIGNATURE = [0x50, 0x4b, 0x03, 0x04] as const;
+
+/** 앞 4바이트가 zip 시그니처인가 (xlsx·xlsm 공통) */
+export function hasZipSignature(bytes: ArrayBuffer | Uint8Array): boolean {
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  if (view.length < ZIP_SIGNATURE.length) return false;
+  return ZIP_SIGNATURE.every((byte, index) => view[index] === byte);
+}
+
+/** 가져오기 실패를 사용자 안내 문구와 함께 알리는 오류 */
+export class NotXlsxError extends Error {
+  constructor(message = "올바른 xlsx 파일이 아닙니다.") {
+    super(message);
+    this.name = "NotXlsxError";
+  }
+}
+
+/** 바이트 → 워크북 (xlsx 가 아니면 `NotXlsxError`) */
 export function bytesToWorkbook(bytes: ArrayBuffer | Uint8Array): XLSX.WorkBook {
+  if (!hasZipSignature(bytes)) throw new NotXlsxError();
   return XLSX.read(bytes, { type: "array", cellStyles: true, cellNF: true, cellFormula: true });
 }
 

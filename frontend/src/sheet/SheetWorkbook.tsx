@@ -9,6 +9,12 @@
  * - 남의 편집 → `applyOp` (이 경로는 op 를 다시 만들지 않는다 — noHistory).
  * - 5초 디바운스로 전체 문서를 `PUT /api/pages/:id/sheet` 에 저장한다. 페이지를 떠날 때는 즉시.
  *
+ * 입력 검사 (m5 수정 라운드 1):
+ * - 시트에 걸린 데이터 유효성 규칙을 `hooks.beforeUpdateCell` 에서 우리가 다시 본다
+ *   (`./validation`). 엔진의 `prohibitInput` 안내창이 영어라서 직접 처리한다.
+ * - 붙여넣기·가져오기는 이 경로를 타지 않으므로, 합계는 템플릿의 숫자 보조 열에서
+ *   한 번 더 막고 경고 셀로 알린다 (`backend/src/sheets/templates.ts`).
+ *
  * 수식 (실측으로 확인한 Fortune-sheet 1.0.4 의 성질 — templates.ts 주석 참고):
  * - 저장된 수식은 불러오는 것만으로 계산되지 않는다 → 마운트 후 `calculateFormula` 를 부른다.
  * - 한 번의 계산은 **행 우선**이라 "보조 열 → 집계" 같은 의존성이 한 번에 안 풀린다 → 2회 돈다.
@@ -24,8 +30,10 @@ import { collabNotice, type CollabConnection } from "../collab/status";
 import { Spinner } from "../components/Spinner";
 import { normalizeDoc, toStorableDoc, type WorkSheet } from "./schema";
 import { useSheetSync } from "./useSheetSync";
+import { checkCellInput, type CellRule } from "./validation";
 import {
   bytesToWorkbook,
+  NotXlsxError,
   sheetToCsv,
   sheetsToWorkbook,
   workbookToBytes,
@@ -40,6 +48,8 @@ const RECALC_DEBOUNCE_MS = 600;
 const SUPPRESS_MS = 800;
 /** 가져오기를 op 로 반영할 수 있는 최대 셀 수 (넘으면 화면만 교체하고 저장한다) */
 const MAX_IMPORT_OPS_CELLS = 4_000;
+/** 입력 안내 문구가 저절로 사라지기까지 (읽을 시간은 주되 계속 남지는 않게) */
+const NOTICE_MS = 10_000;
 
 const EXPOSE_TEST_HOOKS = import.meta.env.DEV || import.meta.env.VITE_E2E === "1";
 
@@ -84,6 +94,7 @@ export default function SheetWorkbook({
   const dirtyRef = useRef(false);
   const aliveRef = useRef(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const editable = !readOnly && !serverReadOnly;
 
@@ -135,6 +146,16 @@ export default function SheetWorkbook({
     };
   }, [readOnly, serverReadOnly, page.id]);
 
+  /** 잠깐 보여 주고 스스로 사라지는 안내 (입력 되돌림 같은 순간적인 알림용) */
+  const flashNotice = useCallback((message: string) => {
+    setNotice(message);
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = setTimeout(() => {
+      noticeTimerRef.current = null;
+      if (aliveRef.current) setNotice(null);
+    }, NOTICE_MS);
+  }, []);
+
   // ---- 수식 계산 --------------------------------------------------------
   const recalculate = useCallback((options: { broadcast: boolean }) => {
     const workbook = workbookRef.current;
@@ -178,7 +199,10 @@ export default function SheetWorkbook({
         versionRef.current = result.version;
         if (aliveRef.current) {
           setSaveStatus("saved");
-          setNotice(null);
+          // 저장이 끝났다고 **입력 안내까지** 지우지는 않는다 — 5초 디바운스 저장이
+          // 방금 뜬 "숫자만 입력하세요" 를 덮어써 사라지게 하던 문제가 있었다.
+          // (스스로 사라지는 안내는 flashNotice 의 타이머가 지운다.)
+          if (noticeTimerRef.current === null) setNotice(null);
         }
       } catch (err) {
         if (err instanceof ApiError && err.code === "version_conflict") {
@@ -300,6 +324,7 @@ export default function SheetWorkbook({
       flush();
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       if (recalcTimerRef.current) clearTimeout(recalcTimerRef.current);
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
     };
   }, [save]);
 
@@ -424,11 +449,52 @@ export default function SheetWorkbook({
           recalculate({ broadcast: true });
           void save();
         }, 200);
-      } catch {
-        setNotice("xlsx 파일을 읽지 못했습니다. 파일이 손상되지 않았는지 확인해 주세요.");
+      } catch (err) {
+        setNotice(
+          err instanceof NotXlsxError
+            ? "올바른 xlsx 파일이 아닙니다. 엑셀에서 저장한 .xlsx 파일을 골라 주세요."
+            : "xlsx 파일을 읽지 못했습니다. 파일이 손상되지 않았는지 확인해 주세요.",
+        );
       }
     },
     [editable, recalculate, save],
+  );
+
+  /**
+   * 입력 단계 방어 (1차) — 시트에 걸린 데이터 유효성 규칙을 우리가 검사한다.
+   *
+   * `false` 를 돌려주면 엔진이 입력을 되돌린다. 안내 문구는 한국어로 우리가 띄운다
+   * (엔진의 `prohibitInput` 안내창은 영어인 데다 문장이 깨진다 — `./validation` 주석).
+   * `50,000`·`2026/03/10` 처럼 뜻이 분명한 표기는 되돌린 뒤 정규화한 값을 대신 넣는다.
+   */
+  const beforeUpdateCell = useCallback(
+    (r: number, c: number, value: unknown): boolean => {
+      const workbook = workbookRef.current;
+      if (!workbook) return true;
+      let rule: CellRule | undefined;
+      try {
+        rule = (workbook.getSheet() as { dataVerification?: Record<string, CellRule> })
+          .dataVerification?.[`${r}_${c}`];
+      } catch {
+        return true; // 시트를 읽지 못하면 막지 않는다.
+      }
+      const result = checkCellInput(rule, value);
+      if (result.kind === "accept") return true;
+      if (result.kind === "reject") {
+        flashNotice(result.message);
+        return false;
+      }
+      // 정규화한 값으로 다시 넣는다 — 입력이 취소된 다음이라 한 틱 미룬다.
+      setTimeout(() => {
+        try {
+          workbookRef.current?.setCellValue(r, c, result.value);
+        } catch {
+          // 셀이 사라졌거나 시트가 바뀌었다 — 조용히 넘어간다.
+        }
+      }, 0);
+      return false;
+    },
+    [flashNotice],
   );
 
   const settings = useMemo(
@@ -438,8 +504,9 @@ export default function SheetWorkbook({
       showFormulaBar: true,
       showSheetTabs: true,
       allowEdit: editable,
+      hooks: { beforeUpdateCell },
     }),
-    [editable],
+    [beforeUpdateCell, editable],
   );
 
   if (loadError) {

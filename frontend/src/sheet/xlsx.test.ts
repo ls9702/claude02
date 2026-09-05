@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   bytesToWorkbook,
+  hasZipSignature,
+  NotXlsxError,
   sheetToCsv,
   sheetsToWorkbook,
   workbookToBytes,
@@ -139,5 +141,55 @@ describe("CSV 내보내기", () => {
     expect(lines[1]).toContain("2026-01-05");
     expect(lines[1]).toContain("수입");
     expect(lines[1]).toContain("30000");
+  });
+});
+
+/**
+ * 회귀: 검증 리포트 Finding 4.
+ * SheetJS 는 형식을 관대하게 자동 판별해서, 확장자만 `.xlsx` 인 평범한 텍스트·CSV 도
+ * 예외 없이 워크북으로 읽어 버렸다. 그래서 "읽지 못했습니다" 안전 경로를 지나쳐
+ * 장부가 알아보기 힘든 내용으로 조용히 덮어써졌다.
+ */
+describe("xlsx 가져오기 — zip 시그니처 검사", () => {
+  const bytesOf = (text: string) => new TextEncoder().encode(text);
+  /** `XLSX.write(type:"array")` 는 ArrayBuffer 를 돌려준다 — 바이트로 다룬다. */
+  const xlsxBytes = (): Uint8Array =>
+    new Uint8Array(workbookToBytes(sheetsToWorkbook([ledgerLike()])) as unknown as ArrayBuffer);
+
+  it("진짜 xlsx 는 zip 시그니처(PK\\x03\\x04)로 시작한다", () => {
+    const bytes = xlsxBytes();
+    expect(hasZipSignature(bytes)).toBe(true);
+    expect(Array.from(bytes.slice(0, 4))).toEqual([0x50, 0x4b, 0x03, 0x04]);
+    // 정상 파일은 그대로 읽힌다.
+    expect(workbookToSheets(bytesToWorkbook(bytes))[0]!.name).toBe("장부");
+  });
+
+  it("확장자만 xlsx 인 텍스트/CSV 는 거부한다 (예전에는 CSV 로 조용히 읽혔다)", () => {
+    const garbage = bytesOf("this is not a real xlsx file, just garbage bytes 12345 %%%$$$");
+    expect(hasZipSignature(garbage)).toBe(false);
+    expect(() => bytesToWorkbook(garbage)).toThrow(NotXlsxError);
+
+    const csv = bytesOf("날짜,구분,금액\n2026-01-05,수입,30000\n");
+    expect(hasZipSignature(csv)).toBe(false);
+    expect(() => bytesToWorkbook(csv)).toThrow(NotXlsxError);
+  });
+
+  it("빈 파일·4바이트보다 짧은 파일도 거부한다", () => {
+    expect(hasZipSignature(new Uint8Array(0))).toBe(false);
+    expect(hasZipSignature(new Uint8Array([0x50, 0x4b]))).toBe(false);
+    expect(() => bytesToWorkbook(new Uint8Array(0))).toThrow(NotXlsxError);
+  });
+
+  it("앞부분이 잘린 xlsx 는 시그니처는 맞지만 읽기에서 걸린다", () => {
+    const bytes = xlsxBytes();
+    const truncated = bytes.slice(0, Math.floor(bytes.length / 2));
+    expect(hasZipSignature(truncated)).toBe(true);
+    expect(() => bytesToWorkbook(truncated)).toThrow();
+  });
+
+  it("ArrayBuffer 로 줘도 같은 판정을 한다", () => {
+    const garbage = bytesOf("nope");
+    const buffer = garbage.buffer.slice(0) as ArrayBuffer;
+    expect(hasZipSignature(buffer)).toBe(false);
   });
 });
