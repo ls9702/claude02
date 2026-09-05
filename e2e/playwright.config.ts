@@ -89,7 +89,13 @@ export default defineConfig({
       stdout: "pipe",
       stderr: "pipe",
       // 저장되지 않은 변경이 있어도 이탈 확인 대화상자를 띄우지 않는다 (자동화 중 reload/close 를 막지 않게).
-      env: { VITE_E2E: "1", VITE_DISABLE_PREVENT_UNLOAD: "1" },
+      // 룸 재검증·씬 폴링 주기는 테스트에서 기다릴 수 있게 줄인다 (기본 30초/15초).
+      env: {
+        VITE_E2E: "1",
+        VITE_DISABLE_PREVENT_UNLOAD: "1",
+        VITE_ROOM_RECHECK_MS: "2000",
+        VITE_SCENE_POLL_MS: "2000",
+      },
     },
   ],
 });

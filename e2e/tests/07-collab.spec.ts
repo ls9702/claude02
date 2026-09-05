@@ -294,3 +294,103 @@ test("로그인하지 않으면 /socket.io 릴레이에 붙을 수 없다", asyn
   expect(res.status()).toBe(401);
   await context.close();
 });
+
+test("세션이 잠기면 접속 중인 클라이언트가 룸에서 나가고 읽기 전용이 된다", async ({
+  browser,
+  playwright,
+}) => {
+  const { aliceId } = loadFixtures();
+  const api = await adminApi(playwright);
+  const { sessionId, pageId } = await createSessionWithPage(api, {
+    name: "협업 중 잠금",
+    memberIds: [aliceId],
+  });
+
+  const a = await openPage(browser, ALICE_STATE, `/s/${sessionId}/p/${pageId}`);
+  await expectCollaborators(a.page, 1);
+
+  // 관리자가 잠근다 → 재검증 주기(VITE_ROOM_RECHECK_MS) 안에 룸을 떠나고 읽기 전용이 된다.
+  expect((await api.patch(`/api/admin/sessions/${sessionId}`, { data: { locked: true } })).status()).toBe(200);
+
+  await expect(a.page.getByTestId("readonly-pill")).toBeVisible({ timeout: 30_000 });
+  await expect(a.page.getByTestId("collab-count")).toHaveCount(0);
+  await expect(a.page.getByTestId("collab-notice")).toContainText("실시간 협업을 사용하지 않습니다");
+
+  // 잠금을 풀면 다시 룸에 참여한다.
+  expect((await api.patch(`/api/admin/sessions/${sessionId}`, { data: { locked: false } })).status()).toBe(200);
+  await expect(a.page.getByTestId("readonly-pill")).toHaveCount(0, { timeout: 30_000 });
+  await expectCollaborators(a.page, 1);
+
+  await api.dispose();
+  await a.close();
+});
+
+test("저장에 실패해 배너가 떠도, 다시 저장에 성공하면 배너가 사라진다", async ({
+  browser,
+  playwright,
+}) => {
+  const { aliceId } = loadFixtures();
+  const api = await adminApi(playwright);
+  const { sessionId, pageId } = await createSessionWithPage(api, {
+    name: "저장 실패 배너",
+    memberIds: [aliceId],
+  });
+  await api.dispose();
+
+  const a = await openPage(browser, ALICE_STATE, `/s/${sessionId}/p/${pageId}`);
+
+  // 씬 저장만 실패하게 만든다 (백엔드를 내리는 것과 같은 효과).
+  let failSaves = true;
+  await a.page.route(`**/api/pages/${pageId}/scene`, async (route) => {
+    if (failSaves && route.request().method() === "PUT") return route.abort();
+    return route.continue();
+  });
+
+  await addRectangle(a.page, { x: 30, y: 30 });
+  await expect(a.page.getByTestId("save-status")).toHaveAttribute("data-status", "error", {
+    timeout: 30_000,
+  });
+  await expect(a.page.getByTestId("collab-error")).toBeVisible();
+
+  // 복구되면 다음 성공 저장에서 오류 배너가 사라져야 한다.
+  failSaves = false;
+  await addRectangle(a.page, { x: 200, y: 30 });
+  await expect(a.page.getByTestId("save-status")).toHaveAttribute("data-status", "saved", {
+    timeout: 30_000,
+  });
+  await expect(a.page.getByTestId("collab-error")).toHaveCount(0);
+
+  await a.close();
+});
+
+test("릴레이 연결이 끊기면 '재연결 중…' 을 표시하고 복구되면 접속자 수로 돌아온다", async ({
+  browser,
+  playwright,
+}) => {
+  const { aliceId } = loadFixtures();
+  const api = await adminApi(playwright);
+  const { sessionId, pageId } = await createSessionWithPage(api, {
+    name: "재연결 표시",
+    memberIds: [aliceId],
+  });
+  await api.dispose();
+
+  const context = await browser.newContext({ storageState: ALICE_STATE });
+  const page = await context.newPage();
+  await page.goto(`/s/${sessionId}/p/${pageId}`);
+  await waitForExcalidraw(page);
+  await expectCollaborators(page, 1);
+
+  // 오프라인으로 만든 뒤 transport 를 끊는다 — 재연결이 실패하는 동안 상태가 유지된다.
+  await context.setOffline(true);
+  await page.evaluate(() => window.__closeCollabTransport!());
+  await expect(page.getByTestId("collab-reconnecting")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("collab-count")).toHaveCount(0);
+  await expect(page.getByTestId("collab-notice")).toContainText("변경 내용은 계속 저장됩니다");
+
+  await context.setOffline(false);
+  await expect(page.getByTestId("collab-reconnecting")).toHaveCount(0, { timeout: 60_000 });
+  await expectCollaborators(page, 1);
+
+  await context.close();
+});

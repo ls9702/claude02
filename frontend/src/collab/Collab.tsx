@@ -55,8 +55,11 @@ import {
   CURSOR_SYNC_TIMEOUT,
   IDLE_THRESHOLD,
   INITIAL_SCENE_UPDATE_TIMEOUT,
+  KEEPALIVE_MAX_BYTES,
   LOAD_IMAGES_TIMEOUT,
+  ROOM_RECHECK_MS,
   SAVE_DEBOUNCE_MS,
+  SCENE_POLL_MS,
   SYNC_FULL_SCENE_INTERVAL_MS,
   WS_EVENTS,
   WS_SUBTYPES,
@@ -70,7 +73,9 @@ import {
   saveFilesToServer,
   updateStaleImageStatuses,
 } from "./files";
+import { validateBroadcastPayload } from "./payload";
 import { Portal } from "./Portal";
+import type { CollabConnection } from "./status";
 import { SceneVersionCache, loadSceneFromServer, saveSceneToServer } from "./storage";
 import {
   getSyncableElements,
@@ -96,6 +101,8 @@ export interface CollabPublicState {
   collaboratorCount: number;
   isCollaborating: boolean;
   errorMessage: string | null;
+  /** 릴레이 연결 상태 (배지·배너 문구는 `collab/status.ts`) */
+  connection: CollabConnection;
 }
 
 export interface CollabProps {
@@ -108,6 +115,11 @@ export interface CollabProps {
   onStateChange: (state: CollabPublicState) => void;
   /** 저장이 성공했을 때 (썸네일 업로드 트리거) */
   onSaved?: () => void;
+  /**
+   * 서버가 알려 준 세션 잠금 상태가 바뀌었을 때.
+   * (룸 재검증으로 확인한다 — 관리자가 잠그면 `ROOM_RECHECK_MS` 안에 반영된다.)
+   */
+  onRoomLockedChange?: (locked: boolean) => void;
 }
 
 interface CollabState {
@@ -138,6 +150,17 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
   private saveStatus: SaveStatus = "idle";
   private collaboratorCount = 0;
   private collaborating = false;
+  private connection: CollabConnection = "idle";
+  /** 세션이 잠겨 릴레이를 쓰지 않는 상태 */
+  private roomLocked = false;
+  /** 마지막으로 부모에게 알린 잠금 상태 (같은 값을 반복해서 알리지 않는다) */
+  private reportedLock: boolean | null = null;
+  private roomRecheckTimer: number | null = null;
+  private scenePollTimer: number | null = null;
+  /** 잠금 중 폴링으로 마지막에 반영한 서버 씬 버전 */
+  private polledSceneVersion = -1;
+  /** 형식이 잘못된 브로드캐스트 경고는 한 번만 남긴다 */
+  private warnedInvalidPayload = false;
   private initialized = false;
   private unmounted = false;
   /**
@@ -182,6 +205,7 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
     this.generation += 1;
     window.addEventListener("beforeunload", this.beforeUnload);
     window.addEventListener("unload", this.onUnload);
+    window.addEventListener("pagehide", this.onPageHide);
     document.addEventListener("visibilitychange", this.onDocumentVisibilityFlush);
 
     const unsubOnUserFollow = this.excalidrawAPI.onUserFollow((payload) => {
@@ -199,6 +223,12 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
     // 소켓 연결과 무관하게 저장된 이미지는 복원한다.
     void this.restoreImageFiles();
     void this.startCollaboration();
+    this.startRoomRecheck();
+  }
+
+  override componentDidUpdate(): void {
+    // 읽기 전용 여부가 바뀌면 (관리자가 잠그거나 풀면) 폴링 대상도 달라진다.
+    this.syncScenePolling();
   }
 
   override componentWillUnmount(): void {
@@ -206,7 +236,10 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
     this.generation += 1;
     window.removeEventListener("beforeunload", this.beforeUnload);
     window.removeEventListener("unload", this.onUnload);
+    window.removeEventListener("pagehide", this.onPageHide);
     document.removeEventListener("visibilitychange", this.onDocumentVisibilityFlush);
+    this.stopRoomRecheck();
+    this.stopScenePolling();
     document.removeEventListener("pointermove", this.onPointerMove);
     document.removeEventListener("visibilitychange", this.onVisibilityChange);
     if (this.activeIntervalId) {
@@ -229,7 +262,14 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
       collaboratorCount: this.collaboratorCount,
       isCollaborating: this.collaborating,
       errorMessage: this.state.errorMessage,
+      connection: this.connection,
     });
+  };
+
+  private setConnection = (connection: CollabConnection): void => {
+    if (this.connection === connection) return;
+    this.connection = connection;
+    this.publishState();
   };
 
   private setSaveStatus = (status: SaveStatus): void => {
@@ -259,6 +299,14 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
 
   private onDocumentVisibilityFlush = (): void => {
     if (document.visibilityState === "hidden") this.flushSave();
+  };
+
+  /**
+   * `pagehide` 는 탭 닫기·bfcache 이동에서 `beforeunload` 보다 확실하게 불린다.
+   * 남은 디바운스를 여기서 한 번 더 흘려보낸다.
+   */
+  private onPageHide = (): void => {
+    this.flushSave();
   };
 
   private beforeUnload = withBatchedUpdates((event: BeforeUnloadEvent) => {
@@ -305,11 +353,12 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
     this.saving = true;
     this.setSaveStatus("saving");
     try {
+      const elements = cloneJSON(syncable) as readonly SyncableExcalidrawElement[];
       const result = await saveSceneToServer(
         this.props.pageId,
-        cloneJSON(syncable) as readonly SyncableExcalidrawElement[],
+        elements,
         appState,
-        opts,
+        { keepalive: this.canKeepalive(opts.keepalive === true, elements) },
       );
       this.sceneVersionCache.set(localVersion);
       this.savedAppState = localShared;
@@ -343,6 +392,8 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
       }
 
       this.setSaveStatus("saved");
+      // 저장이 성공했으면 이전 실패 배너는 치운다.
+      this.setErrorMessage(null);
       this.props.onSaved?.();
     } catch (error) {
       // 페이지를 떠나며 취소된 요청은 알릴 대상이 없다 (이탈 시 flush 저장).
@@ -360,6 +411,23 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
         this.savePending = false;
         void this.saveScene();
       }
+    }
+  };
+
+  /**
+   * 이탈 플러시를 `keepalive` 로 보낼 수 있는지.
+   *
+   * 브라우저는 keepalive 요청 본문을 64KiB 로 제한하므로 큰 씬은 그대로 실패한다.
+   * 그런 경우엔 keepalive 를 포기하고 일반 fetch 로 보낸다 — 네비게이션이 요청을
+   * 취소할 수 있어 완주 보장은 없지만, 확실한 거절보다는 낫다.
+   */
+  private canKeepalive = (requested: boolean, elements: readonly unknown[]): boolean => {
+    if (!requested) return false;
+    try {
+      const bytes = new Blob([JSON.stringify(elements)]).size;
+      return bytes <= KEEPALIVE_MAX_BYTES;
+    } catch {
+      return true;
     }
   };
 
@@ -450,15 +518,16 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
     return await this.fileManager.getFiles(unfetchedImages);
   };
 
+  /** 복호화 결과는 원격 데이터다 — 타입을 믿지 않고 `unknown` 으로 돌려준다. */
   private decryptPayload = async (
     iv: Uint8Array<ArrayBuffer>,
     encryptedData: ArrayBuffer,
     decryptionKey: string,
-  ): Promise<ValueOf<SocketUpdateDataSource>> => {
+  ): Promise<unknown> => {
     try {
       const decrypted = await decryptData(iv, encryptedData, decryptionKey);
       const decodedData = new TextDecoder("utf-8").decode(new Uint8Array(decrypted));
-      return JSON.parse(decodedData) as ValueOf<SocketUpdateDataSource>;
+      return JSON.parse(decodedData) as unknown;
     } catch (error) {
       console.error(error);
       this.setErrorMessage("협업 데이터를 복호화하지 못했습니다.");
@@ -478,6 +547,13 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
     try {
       // 원본의 `#room=id,key` 링크 대신 서버에서 룸 정보를 받는다 (URL 에 키를 넣지 않는다).
       const room = await api.getRoom(this.props.pageId);
+      if (stale()) return;
+      if (room.locked) {
+        // 잠긴 세션은 릴레이를 아예 쓰지 않는다 (서버가 룸 키를 주지 않는다).
+        this.enterLockedMode();
+        return;
+      }
+      this.reportLock(false);
       roomId = room.roomId;
       roomKey = room.roomKey;
     } catch (error) {
@@ -533,6 +609,11 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
 
     socket.once("connect_error", fallbackInitializationHandler);
 
+    // 연결 상태를 헤더 배지·배너에 반영한다 (룸이 죽어도 저장은 계속된다).
+    socket.on("connect", this.handleSocketConnect);
+    socket.on("disconnect", this.handleSocketDisconnect);
+    socket.on("connect_error", this.handleSocketDisconnect);
+
     // fallback in case you're not alone in the room but still don't receive
     // initial SCENE_INIT message
     this.socketInitializationTimer = window.setTimeout(
@@ -541,82 +622,11 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
     );
 
     socket.on("client-broadcast", async (encryptedData: ArrayBuffer, iv: Uint8Array<ArrayBuffer>) => {
-      if (!this.portal.roomKey) return;
-
-      const decryptedData = await this.decryptPayload(iv, encryptedData, this.portal.roomKey);
-
-      switch (decryptedData.type) {
-        case WS_SUBTYPES.INVALID_RESPONSE:
-          return;
-        case WS_SUBTYPES.INIT: {
-          if (!this.portal.socketInitialized) {
-            void this.initializeRoom({ fetchScene: false });
-            const remoteElements = toBrandedType<readonly RemoteExcalidrawElement[]>(
-              decryptedData.payload.elements,
-            );
-            const reconciledElements = this._reconcileElements(remoteElements);
-            this.handleRemoteSceneUpdate(reconciledElements);
-          }
-          break;
-        }
-        case WS_SUBTYPES.UPDATE:
-          this.handleRemoteSceneUpdate(
-            this._reconcileElements(
-              toBrandedType<readonly RemoteExcalidrawElement[]>(decryptedData.payload.elements),
-            ),
-          );
-          break;
-        case WS_SUBTYPES.MOUSE_LOCATION: {
-          const { pointer, button, username, selectedElementIds } = decryptedData.payload;
-          const socketId: SocketUpdateDataSource["MOUSE_LOCATION"]["payload"]["socketId"] =
-            decryptedData.payload.socketId;
-
-          this.updateCollaborator(socketId, {
-            pointer,
-            button,
-            selectedElementIds,
-            username,
-          });
-          break;
-        }
-
-        case WS_SUBTYPES.USER_VISIBLE_SCENE_BOUNDS: {
-          const { sceneBounds, socketId } = decryptedData.payload;
-          const userToFollow = this.userToFollow;
-
-          // we're not following the user
-          // (shouldn't happen, but could be late message or bug upstream)
-          if (userToFollow?.socketId !== socketId) {
-            console.warn(
-              `receiving remote client's (from ${socketId}) viewport bounds even though we're not subscribed to it!`,
-            );
-            return;
-          }
-
-          // cross-follow case, ignore updates in this case
-          if (this.followedBy.has(userToFollow.socketId)) return;
-
-          const appState = this.excalidrawAPI.getAppState();
-          this.excalidrawAPI.updateScene({
-            appState: zoomToFitBounds({
-              appState,
-              bounds: sceneBounds,
-              // 0.18.1 API — 상위 버전의 `fit: "contain"` 과 같은 의미다.
-              fitToViewport: false,
-            }).appState,
-          });
-          break;
-        }
-
-        case WS_SUBTYPES.IDLE_STATUS: {
-          const { userState, socketId, username } = decryptedData.payload;
-          this.updateCollaborator(socketId, { userState, username });
-          break;
-        }
-
-        default: {
-          assertNever(decryptedData, null);
-        }
+      try {
+        await this.handleClientBroadcast(encryptedData, iv);
+      } catch (error) {
+        // 원격 데이터로 인한 예외가 창 밖으로 새지 않게 한다.
+        console.error(error);
       }
     });
 
@@ -634,6 +644,127 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
     });
 
     this.initializeIdleDetector();
+  };
+
+  private handleSocketConnect = (): void => {
+    if (this.unmounted || this.roomLocked) return;
+    this.setConnection("connected");
+  };
+
+  /**
+   * transport 가 끊겼다 (룸 서버 다운·네트워크 단절). socket.io 가 알아서 재접속하지만,
+   * 그동안 접속자 수는 사실이 아니므로 지우고 "재연결 중" 을 표시한다.
+   */
+  private handleSocketDisconnect = (): void => {
+    if (this.unmounted || this.roomLocked || !this.portal.socket) return;
+    if (this.collaborators.size > 0) {
+      this.collaborators = new Map();
+      this.excalidrawAPI.updateScene({ collaborators: this.collaborators });
+    }
+    this.collaboratorCount = 0;
+    this.setConnection("reconnecting");
+    this.publishState();
+  };
+
+  /**
+   * E2E 전용 — transport 를 강제로 끊어 "재연결 중" 경로를 시험한다.
+   * (룸 서버를 죽이지 않고도 소켓 단절과 같은 상태가 된다. socket.io 가 곧 재접속한다.)
+   */
+  closeTransportForTest = (): void => {
+    this.portal.socket?.io.engine.close();
+  };
+
+  private handleClientBroadcast = async (
+    encryptedData: ArrayBuffer,
+    iv: Uint8Array<ArrayBuffer>,
+  ): Promise<void> => {
+    if (!this.portal.roomKey) return;
+
+    const raw = await this.decryptPayload(iv, encryptedData, this.portal.roomKey);
+    // 룸은 무상태 릴레이라 페이로드를 검사하지 않는다 — 여기서 형태를 검증하고
+    // 어긋나면 조용히 버린다 (경고는 한 번만).
+    const decryptedData = validateBroadcastPayload(raw);
+    if (!decryptedData) {
+      if (!this.warnedInvalidPayload) {
+        this.warnedInvalidPayload = true;
+        console.warn("형식이 올바르지 않은 협업 브로드캐스트를 무시했습니다.");
+      }
+      return;
+    }
+
+    switch (decryptedData.type) {
+      case WS_SUBTYPES.INVALID_RESPONSE:
+        return;
+      case WS_SUBTYPES.INIT: {
+        if (!this.portal.socketInitialized) {
+          void this.initializeRoom({ fetchScene: false });
+          const remoteElements = toBrandedType<readonly RemoteExcalidrawElement[]>(
+            decryptedData.payload.elements,
+          );
+          const reconciledElements = this._reconcileElements(remoteElements);
+          this.handleRemoteSceneUpdate(reconciledElements);
+        }
+        break;
+      }
+      case WS_SUBTYPES.UPDATE:
+        this.handleRemoteSceneUpdate(
+          this._reconcileElements(
+            toBrandedType<readonly RemoteExcalidrawElement[]>(decryptedData.payload.elements),
+          ),
+        );
+        break;
+      case WS_SUBTYPES.MOUSE_LOCATION: {
+        const { pointer, button, username, selectedElementIds } = decryptedData.payload;
+        const socketId: SocketUpdateDataSource["MOUSE_LOCATION"]["payload"]["socketId"] =
+          decryptedData.payload.socketId;
+
+        this.updateCollaborator(socketId, {
+          pointer,
+          button,
+          selectedElementIds,
+          username,
+        });
+        break;
+      }
+
+      case WS_SUBTYPES.USER_VISIBLE_SCENE_BOUNDS: {
+        const { sceneBounds, socketId } = decryptedData.payload;
+        const userToFollow = this.userToFollow;
+
+        // we're not following the user
+        // (shouldn't happen, but could be late message or bug upstream)
+        if (userToFollow?.socketId !== socketId) {
+          console.warn(
+            `receiving remote client's (from ${socketId}) viewport bounds even though we're not subscribed to it!`,
+          );
+          return;
+        }
+
+        // cross-follow case, ignore updates in this case
+        if (this.followedBy.has(userToFollow.socketId)) return;
+
+        const appState = this.excalidrawAPI.getAppState();
+        this.excalidrawAPI.updateScene({
+          appState: zoomToFitBounds({
+            appState,
+            bounds: sceneBounds,
+            // 0.18.1 API — 상위 버전의 `fit: "contain"` 과 같은 의미다.
+            fitToViewport: false,
+          }).appState,
+        });
+        break;
+      }
+
+      case WS_SUBTYPES.IDLE_STATUS: {
+        const { userState, socketId, username } = decryptedData.payload;
+        this.updateCollaborator(socketId, { userState, username });
+        break;
+      }
+
+      default: {
+        assertNever(decryptedData, null);
+      }
+    }
   };
 
   /**
@@ -656,6 +787,116 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
 
   private markInitialized = (): void => {
     this.initialized = true;
+  };
+
+  // ---- 잠금 감시 / 룸 재검증 --------------------------------------------
+
+  /** 부모(세션 화면)에게 잠금 상태 변화를 알린다 — 읽기 전용 UI 가 여기에 달려 있다. */
+  private reportLock = (locked: boolean): void => {
+    if (this.reportedLock === locked) return;
+    this.reportedLock = locked;
+    this.props.onRoomLockedChange?.(locked);
+  };
+
+  /** 잠긴 세션: 소켓을 닫고 뷰 모드 + 씬 폴링으로 내려간다. */
+  private enterLockedMode = (): void => {
+    this.roomLocked = true;
+    this.markInitialized();
+    this.destroySocketClient();
+    this.setConnection("locked");
+    this.reportLock(true);
+    this.syncScenePolling();
+  };
+
+  /** 잠금이 풀렸다: 폴링을 멈추고 다시 룸에 참여한다. */
+  private exitLockedMode = (): void => {
+    this.roomLocked = false;
+    this.setConnection("idle");
+    this.reportLock(false);
+    this.syncScenePolling();
+    if (!this.portal.socket) void this.startCollaboration();
+  };
+
+  /** 권한이 회수됐다 (401/403) — 룸에서 즉시 나간다. 저장 경로는 서버가 막는다. */
+  private leaveRoom = (): void => {
+    this.destroySocketClient();
+    this.setConnection("idle");
+  };
+
+  private startRoomRecheck = (): void => {
+    if (this.roomRecheckTimer !== null) return;
+    this.roomRecheckTimer = window.setInterval(() => {
+      void this.recheckRoom();
+    }, ROOM_RECHECK_MS);
+  };
+
+  private stopRoomRecheck = (): void => {
+    if (this.roomRecheckTimer === null) return;
+    window.clearInterval(this.roomRecheckTimer);
+    this.roomRecheckTimer = null;
+  };
+
+  /**
+   * 소켓은 핸드셰이크 때 한 번만 인증되고 세션 잠금은 언제든 바뀐다.
+   * 주기적으로 룸 정보를 다시 물어 잠금·권한 변화를 반영한다.
+   */
+  private recheckRoom = async (): Promise<void> => {
+    if (this.unmounted) return;
+    try {
+      const room = await api.getRoom(this.props.pageId);
+      if (this.unmounted) return;
+      if (room.locked) {
+        if (!this.roomLocked) this.enterLockedMode();
+        return;
+      }
+      if (this.roomLocked) this.exitLockedMode();
+      else this.reportLock(false);
+    } catch (error) {
+      if (this.unmounted) return;
+      // 로그아웃·멤버 해제·세션 삭제 등으로 접근 권한이 사라졌다.
+      if (error instanceof ApiError && [401, 403, 404].includes(error.status)) {
+        this.leaveRoom();
+      }
+    }
+  };
+
+  // ---- 잠긴 세션의 씬 폴링 ----------------------------------------------
+
+  /** 잠겨 있고 읽기 전용일 때만 폴링한다 (관리자는 직접 편집·저장한다). */
+  private syncScenePolling = (): void => {
+    const shouldPoll = this.roomLocked && this.props.readOnly && !this.unmounted;
+    if (shouldPoll) this.startScenePolling();
+    else this.stopScenePolling();
+  };
+
+  private startScenePolling = (): void => {
+    if (this.scenePollTimer !== null) return;
+    this.scenePollTimer = window.setInterval(() => {
+      void this.pollScene();
+    }, SCENE_POLL_MS);
+    void this.pollScene();
+  };
+
+  private stopScenePolling = (): void => {
+    if (this.scenePollTimer === null) return;
+    window.clearInterval(this.scenePollTimer);
+    this.scenePollTimer = null;
+  };
+
+  /** 서버 씬을 다시 읽어 바뀐 경우에만 화면에 반영한다. */
+  private pollScene = async (): Promise<void> => {
+    if (this.unmounted || !this.roomLocked) return;
+    try {
+      const scene = await loadSceneFromServer(this.props.pageId);
+      if (this.unmounted || !this.roomLocked) return;
+      if (scene.version === this.polledSceneVersion) return;
+      this.polledSceneVersion = scene.version;
+      this.handleRemoteSceneUpdate(
+        this._reconcileElements(toBrandedType<readonly RemoteExcalidrawElement[]>(scene.elements)),
+      );
+    } catch (error) {
+      console.error(error);
+    }
   };
 
   private initializeRoom = async ({ fetchScene }: { fetchScene: boolean }): Promise<void> => {
@@ -895,6 +1136,9 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
   };
 
   broadcastElements = (elements: readonly OrderedExcalidrawElement[]): void => {
+    // 읽기 전용(잠긴 세션)에서는 릴레이로도 내보내지 않는다 — 잠긴 세션은 애초에
+    // 룸에 붙지 않지만, UI 우회로 들어온 변경이 남의 자동저장에 실리지 않게 한 겹 더 막는다.
+    if (this.props.readOnly) return;
     if (getSceneVersion(elements) > this.getLastBroadcastedOrReceivedSceneVersion()) {
       void this.portal.broadcastScene(WS_SUBTYPES.UPDATE, elements, false);
       this.lastBroadcastedOrReceivedSceneVersion = getSceneVersion(elements);

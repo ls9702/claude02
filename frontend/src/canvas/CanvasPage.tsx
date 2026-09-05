@@ -16,6 +16,7 @@ import type {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, type Page } from "../api";
 import { Collab, type CollabPublicState, type SaveStatus } from "../collab/Collab";
+import { collabNotice } from "../collab/status";
 import type { SocketUpdateDataSource } from "../collab/types";
 import { Spinner } from "../components/Spinner";
 
@@ -39,17 +40,26 @@ const INITIAL_COLLAB_STATE: CollabPublicState = {
   collaboratorCount: 0,
   isCollaborating: false,
   errorMessage: null,
+  connection: "idle",
 };
 
 export interface CanvasPageProps {
   page: Page;
   readOnly: boolean;
   username: string;
-  /** 상단 탭 바에 "접속 N명" 을 그리기 위해 세션 화면으로 올려 준다. */
-  onCollaboratorCount?: (count: number) => void;
+  /** 상단 탭 바에 "접속 N명"·"재연결 중…" 을 그리기 위해 세션 화면으로 올려 준다. */
+  onCollabState?: (state: Pick<CollabPublicState, "collaboratorCount" | "connection">) => void;
+  /** 서버가 알려 준 세션 잠금 상태가 바뀌었을 때 (세션 정보를 다시 읽는다). */
+  onRoomLockedChange?: (locked: boolean) => void;
 }
 
-export function CanvasPage({ page, readOnly, username, onCollaboratorCount }: CanvasPageProps) {
+export function CanvasPage({
+  page,
+  readOnly,
+  username,
+  onCollabState,
+  onRoomLockedChange,
+}: CanvasPageProps) {
   const [excalidrawAPI, setExcalidrawAPI] = useState<ExcalidrawImperativeAPI | null>(null);
   const [initialData, setInitialData] = useState<ExcalidrawInitialDataState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -137,10 +147,16 @@ export function CanvasPage({ page, readOnly, username, onCollaboratorCount }: Ca
   );
 
   useEffect(() => {
-    onCollaboratorCount?.(collabState.collaboratorCount);
-  }, [collabState.collaboratorCount, onCollaboratorCount]);
+    onCollabState?.({
+      collaboratorCount: collabState.collaboratorCount,
+      connection: collabState.connection,
+    });
+  }, [collabState.collaboratorCount, collabState.connection, onCollabState]);
 
-  useEffect(() => () => onCollaboratorCount?.(0), [onCollaboratorCount]);
+  useEffect(
+    () => () => onCollabState?.({ collaboratorCount: 0, connection: "idle" }),
+    [onCollabState],
+  );
 
   // ---- E2E 훅 -----------------------------------------------------------
   useEffect(() => {
@@ -155,6 +171,9 @@ export function CanvasPage({ page, readOnly, username, onCollaboratorCount }: Ca
     window.__flushScene = async () => {
       collabRef.current?.flushSave({ keepalive: false });
     };
+    window.__closeCollabTransport = () => {
+      collabRef.current?.closeTransportForTest();
+    };
     return () => {
       if (window.__excalidrawAPI === excalidrawAPI) window.__excalidrawAPI = undefined;
     };
@@ -164,7 +183,8 @@ export function CanvasPage({ page, readOnly, username, onCollaboratorCount }: Ca
     if (!EXPOSE_TEST_HOOKS) return;
     window.__saveStatus = collabState.saveStatus;
     window.__collaboratorCount = collabState.collaboratorCount;
-  }, [collabState.saveStatus, collabState.collaboratorCount]);
+    window.__collabConnection = collabState.connection;
+  }, [collabState.saveStatus, collabState.collaboratorCount, collabState.connection]);
 
   if (loadError && !initialData) {
     return (
@@ -176,6 +196,8 @@ export function CanvasPage({ page, readOnly, username, onCollaboratorCount }: Ca
     );
   }
   if (!initialData) return <Spinner label="캔버스를 여는 중…" />;
+
+  const notice = collabNotice(collabState.connection);
 
   return (
     <div className="canvas-wrapper" data-testid="canvas-wrapper">
@@ -191,6 +213,11 @@ export function CanvasPage({ page, readOnly, username, onCollaboratorCount }: Ca
         {collabState.errorMessage ? (
           <div className="collab-error" data-testid="collab-error" role="alert">
             {collabState.errorMessage}
+          </div>
+        ) : null}
+        {notice ? (
+          <div className="collab-notice" data-testid="collab-notice" role="status">
+            {notice}
           </div>
         ) : null}
       </div>
@@ -217,6 +244,7 @@ export function CanvasPage({ page, readOnly, username, onCollaboratorCount }: Ca
           readOnly={readOnly}
           onStateChange={setCollabState}
           onSaved={maybeUploadThumbnail}
+          onRoomLockedChange={onRoomLockedChange}
         />
       ) : null}
     </div>

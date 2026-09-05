@@ -51,5 +51,33 @@ export const ENCRYPTION_KEY_BITS = 128;
  * localStorage 자리에 이 디바운스를 두고, 편집이 계속되는 동안에는
  * `SYNC_FULL_SCENE_INTERVAL_MS` 스로틀이 주기 저장을 보장한다.
  * 두 트리거 모두 `Collab.saveScene()` 한 곳으로 들어간다 (저장 경로는 하나다).
+ *
+ * 이 값이 곧 "탭을 즉시 닫으면 잃을 수 있는 최대 구간" 이라 800ms 로 줄였다
+ * (자세한 한계는 루트 `KNOWN_ISSUES.md` 참고).
  */
-export const SAVE_DEBOUNCE_MS = 1500;
+export const SAVE_DEBOUNCE_MS = 800;
+
+/**
+ * 이탈 플러시에서 `keepalive: true` 로 보낼 수 있는 본문의 상한.
+ * 브라우저는 keepalive 요청 본문 합계를 64KiB 로 제한하므로, 그보다 큰 씬은
+ * keepalive 를 포기하고 일반 fetch 로 시도한다(완주 보장은 없다).
+ */
+export const KEEPALIVE_MAX_BYTES = 60 * 1024;
+
+/** 환경변수에서 밀리초 상수를 읽는다 (E2E 에서 타이머를 줄이기 위해). */
+const msFromEnv = (raw: string | undefined, fallback: number): number => {
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+/**
+ * 룸 재검증 주기.
+ *
+ * 소켓은 핸드셰이크 때 한 번만 인증되고, 세션 잠금은 언제든 바뀔 수 있다.
+ * 그래서 주기적으로 `GET /api/pages/:id/room` 을 다시 물어
+ * 403/401 이면 룸을 떠나고, `{locked:true}` 면 릴레이를 끊고 뷰 모드로 내려간다.
+ */
+export const ROOM_RECHECK_MS = msFromEnv(import.meta.env.VITE_ROOM_RECHECK_MS, 30_000);
+
+/** 잠긴 세션에서 뷰어가 서버 씬을 다시 읽는 주기 (릴레이를 쓰지 않으므로 폴링한다) */
+export const SCENE_POLL_MS = msFromEnv(import.meta.env.VITE_SCENE_POLL_MS, 15_000);

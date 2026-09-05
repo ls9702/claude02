@@ -9,6 +9,7 @@ import authPlugin from "./auth/plugin.js";
 import { authRoutes } from "./auth/routes.js";
 import { bootstrapAdmin, purgeExpiredSessions } from "./auth/service.js";
 import { socketIoProxy, SOCKET_IO_PREFIX } from "./collab/proxy.js";
+import { CollabSocketRegistry } from "./collab/sockets.js";
 import { loadConfig, MAX_FILE_BYTES, MAX_THUMBNAIL_BYTES, type AppConfig } from "./config.js";
 import { openDatabase } from "./db/index.js";
 import { ApiError, forbidden } from "./errors.js";
@@ -63,6 +64,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   const db = openDatabase(config.dataDir);
   app.decorate("db", db);
   app.decorate("config", config);
+  app.decorate("collabSockets", new CollabSocketRegistry());
   app.addHook("onClose", async () => {
     db.close();
   });
@@ -93,6 +95,12 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     if (!isGuardedPath(req.url)) return;
     if (PASSWORD_CHANGE_ALLOWED.has(pathOf(req.url))) return;
     throw forbidden("비밀번호를 변경해야 계속 사용할 수 있습니다.", "must_change_password");
+  });
+
+  // 클릭재킹 방지 — 이 앱은 어디에도 임베드되지 않는다.
+  // (전체 CSP 는 배포 단계(M6)에서 리버스 프록시와 함께 정한다 — KNOWN_ISSUES.md 참고.)
+  app.addHook("onSend", async (_req, reply) => {
+    if (!reply.getHeader("X-Frame-Options")) reply.header("X-Frame-Options", "DENY");
   });
 
   app.setErrorHandler((raw, req, reply) => {

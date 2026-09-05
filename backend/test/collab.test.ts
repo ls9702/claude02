@@ -6,8 +6,23 @@ let ctx: TestApp;
 let adminSid: string;
 let memberSid: string;
 let outsiderSid: string;
+let memberId: string;
+let sessionId: string;
 let pageId: string;
 let otherPageId: string;
+
+/** 레지스트리에 넣을 가짜 소켓 (`net.Socket` 의 최소 형태) */
+function fakeSocket(): { destroyed: boolean; destroy(): void; once(event: "close", cb: () => void): void } {
+  return {
+    destroyed: false,
+    destroy() {
+      this.destroyed = true;
+    },
+    once() {
+      // 테스트에서는 close 이벤트를 발생시키지 않는다.
+    },
+  };
+}
 
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
@@ -48,7 +63,7 @@ beforeEach(async () => {
       })
     ).json().user.id as string;
 
-  const memberId = await mkUser("dave");
+  memberId = await mkUser("dave");
   await mkUser("erin");
   memberSid = await login(ctx.app, "dave", "userpass1234");
   outsiderSid = await login(ctx.app, "erin", "userpass1234");
@@ -63,7 +78,7 @@ beforeEach(async () => {
       })
     ).json().session.id as string;
 
-  const sessionId = await mkSession("협업 세션");
+  sessionId = await mkSession("협업 세션");
   const otherSessionId = await mkSession("남의 세션");
   await ctx.app.inject({
     method: "PUT",
@@ -88,6 +103,16 @@ beforeEach(async () => {
 afterEach(async () => {
   await ctx.close();
 });
+
+async function lockSession(locked: boolean): Promise<void> {
+  const res = await ctx.app.inject({
+    method: "PATCH",
+    url: `/api/admin/sessions/${sessionId}`,
+    headers: authHeaders(adminSid),
+    payload: { locked },
+  });
+  expect(res.statusCode).toBe(200);
+}
 
 describe("/socket.io 프록시 인증", () => {
   it("쿠키 없이 폴링하면 401 이다", async () => {
@@ -160,15 +185,21 @@ describe("/socket.io 프록시 인증", () => {
     expect(response).not.toContain("101 Switching Protocols");
   });
 
-  it("로그인한 사용자는 인증을 통과한다 (room 이 없으면 502/503)", async () => {
+  it("로그인한 사용자는 인증을 통과한다 (room 이 없으면 502)", async () => {
     const res = await ctx.app.inject({
       method: "GET",
       url: "/socket.io/?EIO=4&transport=polling",
       headers: authHeaders(memberSid),
     });
     // room 릴레이가 떠 있지 않으므로 프록시가 실패하지만, 401 은 아니어야 한다.
-    expect(res.statusCode).not.toBe(401);
-    expect(res.statusCode).toBeGreaterThanOrEqual(500);
+    // 우리 서버의 오류가 아니라 업스트림 장애이므로 502 로 내려간다.
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error.code).toBe("room_unavailable");
+  });
+
+  it("모든 응답에 X-Frame-Options 가 붙는다 (클릭재킹 방지)", async () => {
+    const res = await ctx.app.inject({ method: "GET", url: "/api/health" });
+    expect(res.headers["x-frame-options"]).toBe("DENY");
   });
 });
 
@@ -212,6 +243,45 @@ describe("POST /api/pages/:id/files/exists", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().existing).toEqual([]);
+  });
+
+  it("다른 세션에만 링크된 파일은 존재로 응답하지 않는다 (교차 세션 존재-오라클 차단)", async () => {
+    // 관리자는 두 세션 모두 접근할 수 있다 — 그래도 이 페이지에 링크되지 않은 파일은 숨긴다.
+    const uploaded = await ctx.app.inject({
+      method: "POST",
+      url: `/api/pages/${pageId}/files`,
+      headers: { ...authHeaders(adminSid), "content-type": `multipart/form-data; boundary=${BOUNDARY}` },
+      payload: multipart({ fileId: "crosssessionfile", mime: "image/png" }, { mime: "image/png", data: PNG }),
+    });
+    expect(uploaded.statusCode).toBe(201);
+
+    const res = await ctx.app.inject({
+      method: "POST",
+      url: `/api/pages/${otherPageId}/files/exists`,
+      headers: authHeaders(adminSid),
+      payload: { ids: ["crosssessionfile"] },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().existing).toEqual([]);
+
+    // 원래 페이지에서는 그대로 존재로 응답한다.
+    const own = await ctx.app.inject({
+      method: "POST",
+      url: `/api/pages/${pageId}/files/exists`,
+      headers: authHeaders(adminSid),
+      payload: { ids: ["crosssessionfile"] },
+    });
+    expect(own.json().existing).toEqual(["crosssessionfile"]);
+  });
+
+  it("ids 가 500개를 넘으면 400 이다", async () => {
+    const res = await ctx.app.inject({
+      method: "POST",
+      url: `/api/pages/${pageId}/files/exists`,
+      headers: authHeaders(memberSid),
+      payload: { ids: Array.from({ length: 501 }, (_, i) => `file${i}`) },
+    });
+    expect(res.statusCode).toBe(400);
   });
 
   it("ids 가 배열이 아니면 400 이다", async () => {
@@ -265,5 +335,114 @@ describe("GET /api/pages/:id/room", () => {
       headers: authHeaders(outsiderSid),
     });
     expect(res.statusCode).toBe(403);
+  });
+
+  it("잠긴 세션이면 멤버에게 룸 키를 주지 않는다", async () => {
+    await lockSession(true);
+    const res = await ctx.app.inject({
+      method: "GET",
+      url: `/api/pages/${pageId}/room`,
+      headers: authHeaders(memberSid),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ locked: true });
+  });
+
+  it("잠긴 세션이면 관리자에게도 룸 키를 주지 않는다", async () => {
+    await lockSession(true);
+    const res = await ctx.app.inject({
+      method: "GET",
+      url: `/api/pages/${pageId}/room`,
+      headers: authHeaders(adminSid),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body).toEqual({ locked: true });
+    expect(body.roomId).toBeUndefined();
+    expect(body.roomKey).toBeUndefined();
+  });
+
+  it("잠금을 풀면 다시 룸 키를 준다", async () => {
+    await lockSession(true);
+    await lockSession(false);
+    const res = await ctx.app.inject({
+      method: "GET",
+      url: `/api/pages/${pageId}/room`,
+      headers: authHeaders(memberSid),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().roomKey).toMatch(/^[A-Za-z0-9_-]{22}$/);
+  });
+});
+
+/**
+ * 핸드셰이크 이후 권한이 회수되면 열린 협업 소켓도 끊어야 한다.
+ * (실제 업그레이드 소켓 대신 레지스트리에 가짜 소켓을 넣어 배선을 검증한다 —
+ *  프록시 훅이 소켓을 등록하는 부분은 `collab/proxy.ts` 의 한 줄이다.)
+ */
+describe("협업 소켓 강제 종료", () => {
+  it("로그아웃하면 그 사용자의 소켓이 끊긴다", async () => {
+    const socket = fakeSocket();
+    ctx.app.collabSockets.register(memberId, socket);
+    expect(ctx.app.collabSockets.countForUser(memberId)).toBe(1);
+
+    const res = await ctx.app.inject({
+      method: "POST",
+      url: "/api/auth/logout",
+      headers: authHeaders(memberSid),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(socket.destroyed).toBe(true);
+    expect(ctx.app.collabSockets.countForUser(memberId)).toBe(0);
+  });
+
+  it("세션 멤버에서 빠지면 그 사용자의 소켓이 끊긴다", async () => {
+    const socket = fakeSocket();
+    ctx.app.collabSockets.register(memberId, socket);
+
+    const res = await ctx.app.inject({
+      method: "DELETE",
+      url: `/api/admin/sessions/${sessionId}/members/${memberId}`,
+      headers: authHeaders(adminSid),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(socket.destroyed).toBe(true);
+  });
+
+  it("사용자가 삭제되면 그 사용자의 소켓이 끊긴다", async () => {
+    const socket = fakeSocket();
+    ctx.app.collabSockets.register(memberId, socket);
+
+    const res = await ctx.app.inject({
+      method: "DELETE",
+      url: `/api/admin/users/${memberId}`,
+      headers: authHeaders(adminSid),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(socket.destroyed).toBe(true);
+  });
+
+  it("세션이 잠기면 그 세션에 접근할 수 있는 사용자의 소켓이 끊긴다", async () => {
+    const memberSocket = fakeSocket();
+    const outsiderSocket = fakeSocket();
+    const outsiderId = ctx.app.db
+      .prepare<[string], { id: string }>("SELECT id FROM users WHERE username = ?")
+      .get("erin")!.id;
+    ctx.app.collabSockets.register(memberId, memberSocket);
+    ctx.app.collabSockets.register(outsiderId, outsiderSocket);
+
+    await lockSession(true);
+
+    expect(memberSocket.destroyed).toBe(true);
+    // 이 세션과 무관한 사용자의 소켓은 건드리지 않는다.
+    expect(outsiderSocket.destroyed).toBe(false);
+  });
+
+  it("잠금을 푸는 요청은 소켓을 끊지 않는다", async () => {
+    await lockSession(true);
+    const socket = fakeSocket();
+    ctx.app.collabSockets.register(memberId, socket);
+    await lockSession(false);
+    expect(socket.destroyed).toBe(false);
   });
 });

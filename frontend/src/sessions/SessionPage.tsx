@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError, type Page, type PageType, type Session } from "../api";
 import { CanvasPage } from "../canvas/CanvasPage";
+import { collabBadge, type CollabConnection } from "../collab/status";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { Spinner } from "../components/Spinner";
 import { UserMenu } from "../components/UserMenu";
@@ -22,8 +23,11 @@ export function SessionPage() {
   const [state, setState] = useState<LoadState | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [showNewPage, setShowNewPage] = useState(false);
-  /** 현재 캔버스 페이지(룸)에 접속한 사람 수 — 자기 자신 포함 */
-  const [collaboratorCount, setCollaboratorCount] = useState(0);
+  /** 현재 캔버스 페이지(룸)의 접속자 수·연결 상태 */
+  const [collab, setCollab] = useState<{
+    collaboratorCount: number;
+    connection: CollabConnection;
+  }>({ collaboratorCount: 0, connection: "idle" });
 
   const load = useCallback(async () => {
     if (!sessionId) return;
@@ -39,6 +43,21 @@ export function SessionPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /** 지금 화면이 알고 있는 잠금 상태 (아직 세션을 못 읽었으면 null) */
+  const lockedRef = useRef<boolean | null>(null);
+  lockedRef.current = state ? state.session.locked : null;
+
+  /**
+   * 캔버스가 룸 재검증으로 알아낸 잠금 상태가 지금 보고 있는 세션 정보와 다르면
+   * 세션을 다시 읽는다 — 읽기 전용 UI(뷰 모드·페이지 편집 버튼)가 여기에 달려 있다.
+   */
+  const onRoomLockedChange = useCallback(
+    (locked: boolean) => {
+      if (lockedRef.current !== null && lockedRef.current !== locked) void load();
+    },
+    [load],
+  );
 
   if (!sessionId) return <Navigate to="/" replace />;
 
@@ -65,6 +84,7 @@ export function SessionPage() {
   }
 
   const activePage = pageId ? pages.find((p) => p.id === pageId) : undefined;
+  const badge = collabBadge(collab);
 
   const createPage = async (name: string, type: PageType) => {
     const { page } = await api.createPage(session.id, name, type);
@@ -143,9 +163,9 @@ export function SessionPage() {
         ) : null}
 
         <div className="spacer" />
-        {collaboratorCount > 0 ? (
-          <span className="pill" data-testid="collab-count" title="이 페이지에 접속한 사람">
-            {`접속 ${collaboratorCount}명`}
+        {badge ? (
+          <span className="pill" data-testid={badge.testId} title={badge.title}>
+            {badge.text}
           </span>
         ) : null}
         {readOnly ? <span className="pill" data-testid="readonly-pill">읽기 전용</span> : null}
@@ -165,7 +185,8 @@ export function SessionPage() {
             page={activePage}
             readOnly={readOnly}
             username={user?.username ?? "익명"}
-            onCollaboratorCount={setCollaboratorCount}
+            onCollabState={setCollab}
+            onRoomLockedChange={onRoomLockedChange}
           />
         ) : (
           <SheetPlaceholder key={activePage.id} page={activePage} />

@@ -141,6 +141,12 @@ export interface AdminSession extends Session {
   pages: Page[];
 }
 
+/**
+ * `GET /api/pages/:id/room` 응답.
+ * 잠긴 세션은 릴레이를 쓰지 않으므로 룸 키 대신 `{ locked: true }` 가 온다.
+ */
+export type RoomInfo = { locked: true } | { locked?: false; roomId: string; roomKey: string };
+
 export interface SceneData {
   elements: unknown[];
   appState: Record<string, unknown>;
@@ -185,8 +191,7 @@ export const api = {
       method: "PUT",
       body: { pageIds },
     }),
-  getRoom: (pageId: string) =>
-    request<{ roomId: string; roomKey: string }>(`/api/pages/${pageId}/room`),
+  getRoom: (pageId: string) => request<RoomInfo>(`/api/pages/${pageId}/room`),
 
   // 씬
   getScene: (pageId: string) => request<SceneData>(`/api/pages/${pageId}/scene`),

@@ -9,7 +9,7 @@ import { badRequest, forbidden, notFound, payloadTooLarge } from "../errors.js";
 import { nowIso } from "../ids.js";
 import type { FileRow } from "../types.js";
 import { asObject } from "../validate.js";
-import { canAccessFile, filePathFor } from "./storage.js";
+import { canAccessFile, fileIdsForPages, filePathFor } from "./storage.js";
 
 interface IdParams {
   id: string;
@@ -106,9 +106,13 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
   /**
    * 협업 중 FileManager 가 "이 파일들은 이미 서버에 있나?" 를 묻는 엔드포인트.
    * 이미 있는 파일은 다시 올리지 않는다.
+   *
+   * 판정은 **이 페이지에 링크된 파일**(`page_files`)로 한정한다. 전역 `files` 테이블을
+   * 그대로 조회하면 fileId(= 내용 해시)를 아는 사람이 "그 이미지가 다른 세션에
+   * 올라와 있는지" 를 알아낼 수 있는 교차 세션 존재-오라클이 된다.
    */
   app.post<{ Params: IdParams }>("/api/pages/:id/files/exists", async (req) => {
-    requirePageAccess(app.db, req.user!, req.params.id);
+    const { page } = requirePageAccess(app.db, req.user!, req.params.id);
 
     const body = asObject(req.body);
     const raw = body.ids;
@@ -118,11 +122,8 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
     const ids = raw.filter((id): id is string => typeof id === "string" && FILE_ID_RE.test(id));
     if (ids.length === 0) return { existing: [] };
 
-    const placeholders = ids.map(() => "?").join(",");
-    const rows = app.db
-      .prepare<string[], { id: string }>(`SELECT id FROM files WHERE id IN (${placeholders})`)
-      .all(...ids);
-    return { existing: rows.map((r) => r.id) };
+    const linked = new Set(fileIdsForPages(app.db, [page.id]));
+    return { existing: ids.filter((id) => linked.has(id)) };
   });
 
   app.get<{ Params: FileParams }>("/files/:fileId", async (req, reply) => {

@@ -156,10 +156,19 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true };
   });
 
-  /** 협업 룸 정보 — 세션 멤버에게만 전달한다 (M2에서 사용). */
+  /**
+   * 협업 룸 정보 — 세션 멤버에게만 전달한다 (M2에서 사용).
+   *
+   * 잠긴 세션은 릴레이(룸)를 아예 쓰지 않는다. 보관·읽기 전용 보드에 실시간 협업은
+   * 필요 없고, 룸은 무상태 릴레이라 "읽기 전용" 을 강제할 방법이 없기 때문이다
+   * (읽기 전용 멤버가 룸으로 편집을 주입하면 다른 사람의 자동저장에 편입된다).
+   * 그래서 잠겨 있으면 **관리자를 포함해 모두에게** 키를 주지 않는다.
+   * 관리자 편집은 `PUT /api/pages/:id/scene` 으로 그대로 저장된다.
+   */
   app.get<{ Params: IdParams }>("/api/pages/:id/room", async (req) => {
-    const { page } = requirePageAccess(app.db, req.user!, req.params.id);
+    const { page, session } = requirePageAccess(app.db, req.user!, req.params.id);
     if (page.type !== "canvas") throw notFound("캔버스 페이지가 아닙니다.");
+    if (session.locked === 1) return { locked: true };
     return { roomId: page.room_id, roomKey: page.room_key };
   });
 }

@@ -24,6 +24,10 @@ interface Window {
   __excalidrawAPI?: ExcalidrawTestApi;
   __excalidrawLib?: ExcalidrawTestLib;
   __flushScene?: () => Promise<void>;
+  /** 릴레이 소켓의 transport 를 강제로 끊는다 (재연결 표시 테스트용) */
+  __closeCollabTransport?: () => void;
   __saveStatus?: string;
   __collaboratorCount?: number;
+  /** 릴레이 연결 상태 (idle/connected/reconnecting/locked) */
+  __collabConnection?: string;
 }

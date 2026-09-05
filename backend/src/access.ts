@@ -40,6 +40,24 @@ export function requirePageAccess(db: Db, user: UserRow, pageId: string): PageAc
   return { page, session };
 }
 
+/**
+ * 이 세션의 협업 룸에 접근할 수 있는 사용자 id 전부 (멤버 + 관리자).
+ * 세션이 잠길 때 열려 있는 협업 소켓을 끊는 대상이다.
+ */
+export function userIdsWithSessionAccess(db: Db, sessionId: string): string[] {
+  const members = db
+    .prepare<[string], { user_id: string }>(
+      "SELECT user_id FROM session_members WHERE session_id = ?",
+    )
+    .all(sessionId)
+    .map((r) => r.user_id);
+  const admins = db
+    .prepare<[], { id: string }>("SELECT id FROM users WHERE role = 'admin'")
+    .all()
+    .map((r) => r.id);
+  return [...new Set([...members, ...admins])];
+}
+
 /** 잠긴 세션은 관리자만 쓰기 가능. */
 export function assertWritable(session: SessionRow, user: UserRow): void {
   if (session.locked === 1 && user.role !== "admin") {
