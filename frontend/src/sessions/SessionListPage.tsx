@@ -67,7 +67,7 @@ export function SessionListPage() {
                 <span className="session-card-meta">
                   페이지 {session.pages.length}개
                   {session.unresolvedComments > 0 ? (
-                    <span className="badge" title="미해결 댓글">
+                    <span className="badge" data-testid="unresolved-badge" title="미해결 댓글">
                       {session.unresolvedComments}
                     </span>
                   ) : null}

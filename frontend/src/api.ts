@@ -157,6 +157,52 @@ export interface SceneSaveResult extends SceneData {
   changed: boolean;
 }
 
+// ---- 댓글 ---------------------------------------------------------------
+
+/** 작성자 표시 (사용자가 삭제되었으면 null) */
+export interface CommentAuthor {
+  id: string;
+  username: string;
+}
+
+export interface CommentReply {
+  id: string;
+  commentId: string;
+  author: CommentAuthor | null;
+  body: string;
+  createdAt: string;
+}
+
+export interface Comment {
+  id: string;
+  pageId: string;
+  /** 요소 앵커. null 이면 좌표 앵커다. */
+  elementId: string | null;
+  /** 마지막으로 알려진 씬 좌표 (요소가 삭제되면 이 값으로 고정된다) */
+  x: number;
+  y: number;
+  author: CommentAuthor | null;
+  body: string;
+  resolved: boolean;
+  createdAt: string;
+  updatedAt: string;
+  replies: CommentReply[];
+}
+
+export interface NewCommentInput {
+  elementId?: string | null;
+  x: number;
+  y: number;
+  body: string;
+}
+
+export interface CommentPatch {
+  body?: string;
+  resolved?: boolean;
+  x?: number;
+  y?: number;
+}
+
 // ---- 엔드포인트 ---------------------------------------------------------
 
 export const api = {
@@ -234,6 +280,25 @@ export const api = {
       method: "POST",
       body: { ids },
     }),
+
+  // 댓글
+  listComments: (pageId: string, opts: { includeResolved?: boolean } = {}) =>
+    request<{ comments: Comment[] }>(
+      `/api/pages/${pageId}/comments${opts.includeResolved ? "?includeResolved=1" : ""}`,
+    ),
+  createComment: (pageId: string, input: NewCommentInput) =>
+    request<{ comment: Comment }>(`/api/pages/${pageId}/comments`, { method: "POST", body: input }),
+  updateComment: (commentId: string, patch: CommentPatch) =>
+    request<{ comment: Comment }>(`/api/comments/${commentId}`, { method: "PATCH", body: patch }),
+  deleteComment: (commentId: string) =>
+    request<{ ok: true }>(`/api/comments/${commentId}`, { method: "DELETE" }),
+  createReply: (commentId: string, body: string) =>
+    request<{ reply: CommentReply }>(`/api/comments/${commentId}/replies`, {
+      method: "POST",
+      body: { body },
+    }),
+  deleteReply: (replyId: string) =>
+    request<{ ok: true }>(`/api/replies/${replyId}`, { method: "DELETE" }),
 
   // 관리자
   adminListUsers: () => request<{ users: User[] }>("/api/admin/users"),

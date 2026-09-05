@@ -48,8 +48,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
   app.post("/api/auth/logout", async (req, reply) => {
     if (req.authSession) deleteAuthSession(app.db, req.authSession.id);
-    // 열려 있는 협업 소켓은 핸드셰이크 때 한 번만 인증됐다 — 로그아웃과 함께 끊는다.
-    if (req.user) app.collabSockets.closeForUser(req.user.id);
+    // 열려 있는 협업·댓글 소켓은 핸드셰이크 때 한 번만 인증됐다 — 로그아웃과 함께 끊는다.
+    if (req.user) {
+      app.collabSockets.closeForUser(req.user.id);
+      app.commentSockets.closeForUser(req.user.id);
+    }
     reply.clearCookie(SESSION_COOKIE, { path: "/" });
     return { ok: true };
   });

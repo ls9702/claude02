@@ -7,6 +7,7 @@ import type { PageRow, PageType, SessionRow } from "../types.js";
 import { toPublicPage, toPublicSession } from "../types.js";
 import { asObject, requireArray, requireString } from "../validate.js";
 import { fileIdsForPages, pruneOrphanFiles } from "../files/storage.js";
+import { unresolvedCountsBySession } from "../comments/service.js";
 
 interface IdParams {
   id: string;
@@ -38,12 +39,14 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
             )
             .all(user.id);
 
+    // 미해결 댓글 배지 — 세션의 모든 페이지 합계 (한 번의 집계 질의로 모은다).
+    const unresolved = unresolvedCountsBySession(app.db);
+
     return {
       sessions: rows.map((s) => ({
         ...toPublicSession(s),
         pages: listPages(app, s.id).map(toPublicPage),
-        // M3에서 실제 집계로 대체한다.
-        unresolvedComments: 0,
+        unresolvedComments: unresolved.get(s.id) ?? 0,
       })),
     };
   });

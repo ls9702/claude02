@@ -78,3 +78,30 @@ export function requireUsername(source: Record<string, unknown>): string {
   }
   return value;
 }
+
+/** 씬 좌표 등 유한한 수. 범위를 벗어나면 400. */
+export function requireNumber(
+  source: Record<string, unknown>,
+  key: string,
+  label: string,
+  opts: { min?: number; max?: number } = {},
+): number {
+  const raw = source[key];
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    throw badRequest(`${withIGa(label)} 올바르지 않습니다.`);
+  }
+  const min = opts.min ?? -1e7;
+  const max = opts.max ?? 1e7;
+  if (raw < min || raw > max) throw badRequest(`${withIGa(label)} 허용 범위를 벗어났습니다.`);
+  return raw;
+}
+
+export function optionalNumber(
+  source: Record<string, unknown>,
+  key: string,
+  label: string,
+  opts: { min?: number; max?: number } = {},
+): number | undefined {
+  if (source[key] === undefined || source[key] === null) return undefined;
+  return requireNumber(source, key, label, opts);
+}

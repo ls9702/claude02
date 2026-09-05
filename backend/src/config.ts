@@ -74,6 +74,8 @@ export const MAX_FILE_BYTES = 5 * 1024 * 1024;
 export const MAX_THUMBNAIL_BYTES = 200 * 1024;
 /** 로그인 rate limit: IP 당 분당 10회 (이 값만 사용한다 — 라우트에서 참조) */
 export const LOGIN_RATE_LIMIT = { max: 10, timeWindow: "1 minute" } as const;
+/** 댓글·답글 본문 최대 길이 */
+export const MAX_COMMENT_BODY = 2000;
 /** 페이지당 보관하는 씬 스냅샷 수 */
 export const MAX_SNAPSHOTS_PER_PAGE = 20;
 /** 스냅샷 생성 주기 (저장 횟수) */

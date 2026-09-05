@@ -10,6 +10,9 @@ import { authRoutes } from "./auth/routes.js";
 import { bootstrapAdmin, purgeExpiredSessions } from "./auth/service.js";
 import { socketIoProxy, SOCKET_IO_PREFIX } from "./collab/proxy.js";
 import { CollabSocketRegistry } from "./collab/sockets.js";
+import { commentRoutes } from "./comments/routes.js";
+import { CommentSocketRegistry } from "./comments/sockets.js";
+import { commentWebsocket } from "./comments/ws.js";
 import { loadConfig, MAX_FILE_BYTES, MAX_THUMBNAIL_BYTES, type AppConfig } from "./config.js";
 import { openDatabase } from "./db/index.js";
 import { ApiError, forbidden } from "./errors.js";
@@ -31,7 +34,7 @@ const PASSWORD_CHANGE_ALLOWED = new Set(["/api/auth/me", "/api/auth/password", "
 /** 쿼리스트링을 뗀 경로 */
 const pathOf = (url: string): string => url.split("?")[0] ?? url;
 
-/** 강제 비밀번호 변경 가드가 적용되는 경로인지 (`/api/*`, `/files/*`, `/socket.io/*`) */
+/** 강제 비밀번호 변경 가드가 적용되는 경로인지 (`/api/*`, `/files/*`, `/ws/*`, `/socket.io/*`) */
 function isGuardedPath(url: string): boolean {
   const path = pathOf(url);
   return (
@@ -39,6 +42,8 @@ function isGuardedPath(url: string): boolean {
     path.startsWith("/api/") ||
     path === "/files" ||
     path.startsWith("/files/") ||
+    path === "/ws" ||
+    path.startsWith("/ws/") ||
     path === SOCKET_IO_PREFIX ||
     path.startsWith(`${SOCKET_IO_PREFIX}/`)
   );
@@ -65,6 +70,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   app.decorate("db", db);
   app.decorate("config", config);
   app.decorate("collabSockets", new CollabSocketRegistry());
+  app.decorate("commentSockets", new CommentSocketRegistry());
   app.addHook("onClose", async () => {
     db.close();
   });
@@ -147,7 +153,10 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   await app.register(sessionRoutes);
   await app.register(sceneRoutes);
   await app.register(fileRoutes);
+  await app.register(commentRoutes);
   await app.register(socketIoProxy);
+  // socketIoProxy 다음에 등록한다 — upgrade 리스너 공존 처리는 commentWebsocket 안에 있다.
+  await app.register(commentWebsocket);
 
   app.get("/api/health", async () => ({ ok: true }));
 

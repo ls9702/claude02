@@ -3,7 +3,7 @@
 Excalidraw 를 임베드한 자체 호스팅 화이트보드. 관리자가 계정과 세션(보드)을 만들고 사용자를 할당하면,
 사용자는 자신에게 할당된 세션의 페이지(그림판 / 시트)를 열어 함께 작업한다.
 
-전체 스펙은 [`PLAN.md`](./PLAN.md) 참고. 현재 구현 단계는 **M2 — 실시간 협업(excalidraw-room 릴레이 + 협업 클라이언트 포팅)**.
+전체 스펙은 [`PLAN.md`](./PLAN.md) 참고. 현재 구현 단계는 **M3 — 오브젝트 댓글(핀 오버레이 · 스레드 · 실시간 반영)**.
 
 ## 저장소 구조
 
@@ -91,6 +91,14 @@ POST   /api/pages/:id/files             (multipart: fileId, mime, file — 파�
 POST   /api/pages/:id/files/exists      {ids:[...]} → {existing:[...]}   (협업 중 재업로드 방지)
 GET    /files/:fileId                   → 이미지 바이너리 (페이지 접근 권한 필요)
 
+GET    /api/pages/:id/comments          → {comments:[...]}   (`?includeResolved=1` 로 해결된 것도)
+POST   /api/pages/:id/comments          {elementId?, x, y, body} → {comment}
+PATCH  /api/comments/:id                {body?, resolved?, x?, y?} → {comment}
+DELETE /api/comments/:id
+POST   /api/comments/:id/replies        {body} → {reply}
+DELETE /api/replies/:id
+
+GET    /ws/comments/:pageId             → 댓글 실시간 채널 (WebSocket, 쿠키 인증 + 페이지 권한)
 ANY    /socket.io/*                     → room 릴레이 프록시 (로그인 필수, 폴링·WS 업그레이드 모두)
 ```
 
@@ -148,6 +156,34 @@ ANY    /socket.io/*                     → room 릴레이 프록시 (로그인 
   그 브로드캐스트를 받은 상대가 `GET /files/:id` 로 내려받는다.
 - **접속자**: Excalidraw 기본 아바타/커서 UI 를 쓰고, 상단 탭 바에 "접속 N명" 을 표시한다.
   발표자 따라가기는 Excalidraw 내장 `onUserFollow` 에 연결되어 있다.
+
+## 오브젝트 댓글 (M3)
+
+캔버스 위에 얹는 오버레이 레이어다 — **Excalidraw 본체는 건드리지 않는다**.
+
+- **앵커**: 댓글은 요소(`elementId`)나 좌표에 붙는다. 요소 앵커의 핀 위치는 그 요소의 **우상단**(`x+width`, `y`)이라
+  요소를 옮기거나 크기를 바꾸면 핀이 따라간다(`frontend/src/comments/anchor.ts`, 순수 함수 + 단위 테스트).
+- **고아 댓글**: 앵커 요소가 삭제되면 핀은 **마지막 위치에 그대로 남고** "요소 삭제됨" 배지가 붙는다.
+  이때 저장 좌표를 `PATCH /api/comments/:id {x,y}` 로 **한 번만** 갱신해, 다시 열어도 같은 자리에 뜬다.
+  (요소가 움직일 때마다 저장하지는 않는다 — 위치는 언제나 요소에서 다시 계산한다.)
+- **좌표 변환**: `sceneCoordsToViewportCoords` / `viewportCoordsToSceneCoords` 를 쓰고, 최신 `appState` 는
+  Excalidraw `onChange` 에서 받는다. 줌·스크롤·요소 이동이 이어져도 재계산은 `requestAnimationFrame` 으로 프레임당 한 번이다.
+- **작성**: "💬 댓글" 버튼을 누르면 오버레이가 캔버스를 덮어 클릭을 가로챈다(Excalidraw 로 내려가지 않는다).
+  클릭 지점에 요소가 있으면(최상단 우선, 축 정렬 bbox 판정) 요소 앵커, 없으면 좌표 앵커가 된다. 저장·취소·ESC 로 모드가 풀린다.
+- **실시간**: `/ws/comments/:pageId` (@fastify/websocket). 서버가 pageId 별 구독자를 들고 있다가
+  `{type:'comment.created'|'comment.updated'|'comment.deleted'|'reply.created'|'reply.deleted', payload}` 를
+  **발신자 포함** 같은 페이지 접속자에게 보낸다. 클라이언트는 끊기면 지수 백오프로 재접속하고, 다시 붙을 때 목록을 새로 읽는다.
+- **권한**: 읽기는 세션 멤버, 작성·답글은 멤버(잠긴 세션은 관리자만 — `403 session_locked`),
+  본문 수정·삭제는 작성자 또는 관리자, **해결/해결 취소는 멤버 누구나(잠긴 세션에서도 허용)**.
+- **배지**: 상단 바에 현재 페이지의 미해결 수(💬 N), 세션 목록 카드에 세션 전체의 미해결 수
+  (`GET /api/sessions` 의 `unresolvedComments`, 서버 집계).
+
+### upgrade 리스너 공존
+
+`@fastify/websocket` 은 서버의 모든 WebSocket upgrade 를 가로채 Fastify 라우터로 흘려보내고,
+`/socket.io` 프록시(`@fastify/http-proxy`)도 같은 일을 한다. 둘을 그대로 두면 하나의 upgrade 가 라우터에
+두 번 들어가므로, `backend/src/comments/ws.ts` 가 `@fastify/websocket` 이 등록한 리스너를 감싸
+**`/ws/*` 만** 처리하게 바꾼다(그 밖의 경로는 프록시가 가져가거나, 아무도 담당하지 않으면 소켓을 끊는다).
 
 ## Excalidraw 폰트 자체 호스팅
 

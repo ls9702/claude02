@@ -117,3 +117,56 @@ export const toPublicSession = (row: SessionRow): PublicSession => ({
   created_at: row.created_at,
   updated_at: row.updated_at,
 });
+
+// ---- 댓글 ---------------------------------------------------------------
+
+export interface CommentRow {
+  id: string;
+  page_id: string;
+  /** 요소 앵커. NULL 이면 좌표 앵커다. */
+  element_id: string | null;
+  /** 마지막으로 알려진 씬 좌표 (요소가 삭제되면 이 값으로 고정된다) */
+  x: number;
+  y: number;
+  author_id: string | null;
+  body: string;
+  resolved: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CommentReplyRow {
+  id: string;
+  comment_id: string;
+  author_id: string | null;
+  body: string;
+  created_at: string;
+}
+
+/** 작성자 표시 (사용자가 삭제되었으면 null 이 내려간다) */
+export interface CommentAuthor {
+  id: string;
+  username: string;
+}
+
+export interface PublicCommentReply {
+  id: string;
+  commentId: string;
+  author: CommentAuthor | null;
+  body: string;
+  createdAt: string;
+}
+
+export interface PublicComment {
+  id: string;
+  pageId: string;
+  elementId: string | null;
+  x: number;
+  y: number;
+  author: CommentAuthor | null;
+  body: string;
+  resolved: boolean;
+  createdAt: string;
+  updatedAt: string;
+  replies: PublicCommentReply[];
+}

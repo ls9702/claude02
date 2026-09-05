@@ -87,9 +87,10 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           "UPDATE users SET password_hash = ?, must_change_password = 1, updated_at = ? WHERE id = ?",
         )
         .run(hash, at, target.id);
-      // 비밀번호 재설정 시 기존 로그인 세션과 열린 협업 소켓을 모두 끊는다.
+      // 비밀번호 재설정 시 기존 로그인 세션과 열린 협업·댓글 소켓을 모두 끊는다.
       deleteAuthSessionsForUser(app.db, target.id);
       app.collabSockets.closeForUser(target.id);
+      app.commentSockets.closeForUser(target.id);
     }
 
     return { user: toPublicUser(findUserById(app.db, target.id)!) };
@@ -103,8 +104,9 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       throw badRequest("마지막 관리자는 삭제할 수 없습니다.");
     }
     app.db.prepare("DELETE FROM users WHERE id = ?").run(target.id);
-    // 삭제된 사용자의 열린 협업 소켓도 끊는다 (핸드셰이크 이후에는 재검증되지 않는다).
+    // 삭제된 사용자의 열린 협업·댓글 소켓도 끊는다 (핸드셰이크 이후에는 재검증되지 않는다).
     app.collabSockets.closeForUser(target.id);
+    app.commentSockets.closeForUser(target.id);
     return { ok: true };
   });
 
@@ -205,8 +207,9 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     app.db
       .prepare("DELETE FROM session_members WHERE session_id = ? AND user_id = ?")
       .run(req.params.id, req.params.userId);
-    // 할당이 풀린 사용자가 이미 열어 둔 협업 소켓도 끊는다 (즉시 차단 요구사항).
+    // 할당이 풀린 사용자가 이미 열어 둔 협업·댓글 소켓도 끊는다 (즉시 차단 요구사항).
     app.collabSockets.closeForUser(req.params.userId);
+    app.commentSockets.closeForUser(req.params.userId);
     return { ok: true };
   });
 }

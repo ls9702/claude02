@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, type Page } from "../api";
 import { Collab, type CollabPublicState, type SaveStatus } from "../collab/Collab";
 import { collabNotice } from "../collab/status";
+import { CommentsLayer, type CommentsLayerHandle } from "../comments/CommentsLayer";
 import type { SocketUpdateDataSource } from "../collab/types";
 import { Spinner } from "../components/Spinner";
 
@@ -47,18 +48,26 @@ export interface CanvasPageProps {
   page: Page;
   readOnly: boolean;
   username: string;
+  /** 댓글 권한 판단용 (본인 글 수정·삭제, 관리자) */
+  userId: string;
+  isAdmin: boolean;
   /** 상단 탭 바에 "접속 N명"·"재연결 중…" 을 그리기 위해 세션 화면으로 올려 준다. */
   onCollabState?: (state: Pick<CollabPublicState, "collaboratorCount" | "connection">) => void;
   /** 서버가 알려 준 세션 잠금 상태가 바뀌었을 때 (세션 정보를 다시 읽는다). */
   onRoomLockedChange?: (locked: boolean) => void;
+  /** 상단 바 미해결 댓글 배지 */
+  onUnresolvedComments?: (count: number) => void;
 }
 
 export function CanvasPage({
   page,
   readOnly,
   username,
+  userId,
+  isAdmin,
   onCollabState,
   onRoomLockedChange,
+  onUnresolvedComments,
 }: CanvasPageProps) {
   const [excalidrawAPI, setExcalidrawAPI] = useState<ExcalidrawImperativeAPI | null>(null);
   const [initialData, setInitialData] = useState<ExcalidrawInitialDataState | null>(null);
@@ -66,6 +75,7 @@ export function CanvasPage({
   const [collabState, setCollabState] = useState<CollabPublicState>(INITIAL_COLLAB_STATE);
 
   const collabRef = useRef<Collab | null>(null);
+  const commentsRef = useRef<CommentsLayerHandle | null>(null);
   const lastThumbnailAt = useRef(0);
   const readOnlyRef = useRef(readOnly);
   readOnlyRef.current = readOnly;
@@ -128,6 +138,8 @@ export function CanvasPage({
 
   // ---- Excalidraw → Collab 연결 ----------------------------------------
   const onChange = useCallback((elements: readonly OrderedExcalidrawElement[]) => {
+    // 댓글 핀은 줌·스크롤·요소 이동을 모두 여기서 알게 된다 (내부에서 rAF 로 스로틀).
+    commentsRef.current?.onSceneChange();
     const collab = collabRef.current;
     if (!collab) return;
     // 큰 이미지는 업로드 전에 줄이고 씬의 fileId 를 교체한다.
@@ -233,6 +245,17 @@ export function CanvasPage({
         onPointerUpdate={onPointerUpdate}
         UIOptions={{ canvasActions: { loadScene: false } }}
       />
+      {excalidrawAPI ? (
+        <CommentsLayer
+          ref={commentsRef}
+          pageId={page.id}
+          excalidrawAPI={excalidrawAPI}
+          currentUserId={userId}
+          isAdmin={isAdmin}
+          readOnly={readOnly}
+          onUnresolvedChange={onUnresolvedComments}
+        />
+      ) : null}
       {excalidrawAPI ? (
         <Collab
           ref={(instance) => {

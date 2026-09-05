@@ -28,6 +28,8 @@ export function SessionPage() {
     collaboratorCount: number;
     connection: CollabConnection;
   }>({ collaboratorCount: 0, connection: "idle" });
+  /** 현재 페이지의 미해결 댓글 수 (상단 바 배지) */
+  const [unresolvedComments, setUnresolvedComments] = useState(0);
 
   const load = useCallback(async () => {
     if (!sessionId) return;
@@ -163,6 +165,11 @@ export function SessionPage() {
         ) : null}
 
         <div className="spacer" />
+        {unresolvedComments > 0 ? (
+          <span className="pill" data-testid="comment-count" title="이 페이지의 미해결 댓글">
+            💬 {unresolvedComments}
+          </span>
+        ) : null}
         {badge ? (
           <span className="pill" data-testid={badge.testId} title={badge.title}>
             {badge.text}
@@ -185,8 +192,11 @@ export function SessionPage() {
             page={activePage}
             readOnly={readOnly}
             username={user?.username ?? "익명"}
+            userId={user?.id ?? ""}
+            isAdmin={user?.role === "admin"}
             onCollabState={setCollab}
             onRoomLockedChange={onRoomLockedChange}
+            onUnresolvedComments={setUnresolvedComments}
           />
         ) : (
           <SheetPlaceholder key={activePage.id} page={activePage} />

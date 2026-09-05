@@ -148,3 +148,82 @@ export async function expectElementVisible(page: Page, elementId: string, timeou
     )
     .toBe(true);
 }
+
+// ---- 댓글 (M3) ----------------------------------------------------------
+
+/** 씬 좌표를 현재 뷰포트의 클라이언트 좌표로 바꾼다 (오버레이와 같은 공식). */
+export async function sceneToClient(
+  page: Page,
+  scene: { x: number; y: number },
+): Promise<{ x: number; y: number }> {
+  return page.evaluate((point) => {
+    const state = window.__excalidrawAPI!.getAppState() as unknown as {
+      zoom: { value: number };
+      scrollX: number;
+      scrollY: number;
+      offsetLeft: number;
+      offsetTop: number;
+    };
+    return {
+      x: (point.x + state.scrollX) * state.zoom.value + state.offsetLeft,
+      y: (point.y + state.scrollY) * state.zoom.value + state.offsetTop,
+    };
+  }, scene);
+}
+
+/** "💬 댓글" 모드로 씬 좌표를 클릭해 댓글을 남긴다. */
+export async function addComment(
+  page: Page,
+  scene: { x: number; y: number },
+  body: string,
+): Promise<void> {
+  await page.getByTestId("comment-mode").click();
+  const point = await sceneToClient(page, scene);
+  await page.mouse.click(point.x, point.y);
+  await page.getByTestId("comment-input").fill(body);
+  await page.getByTestId("comment-submit").click();
+  await expect(page.getByTestId("comment-composer")).toHaveCount(0);
+}
+
+/** 핀의 화면 위치 (없으면 null) */
+export async function pinPosition(
+  page: Page,
+  commentId?: string,
+): Promise<{ x: number; y: number } | null> {
+  const pin = commentId
+    ? page.locator(`[data-testid="comment-pin"][data-comment-id="${commentId}"]`)
+    : page.getByTestId("comment-pin").first();
+  const box = await pin.boundingBox();
+  return box ? { x: Math.round(box.x), y: Math.round(box.y) } : null;
+}
+
+/** 요소를 씬에서 옮긴다 (협업 병합을 위해 version 을 올린다). */
+export async function moveElement(
+  page: Page,
+  elementId: string,
+  delta: { dx: number; dy: number },
+): Promise<void> {
+  await page.evaluate(
+    ({ id, dx, dy }) => {
+      const api = window.__excalidrawAPI!;
+      const lib = window.__excalidrawLib!;
+      const next = api.getSceneElementsIncludingDeleted().map((el) =>
+        el.id === id ? lib.newElementWith(el, { x: Number(el.x) + dx, y: Number(el.y) + dy }) : el,
+      );
+      api.updateScene({ elements: next });
+    },
+    { id: elementId, ...delta },
+  );
+}
+
+/** 요소를 삭제 표시한다 (Excalidraw 의 삭제와 같은 형태). */
+export async function deleteElement(page: Page, elementId: string): Promise<void> {
+  await page.evaluate((id) => {
+    const api = window.__excalidrawAPI!;
+    const lib = window.__excalidrawLib!;
+    const next = api.getSceneElementsIncludingDeleted().map((el) =>
+      el.id === id ? lib.newElementWith(el, { isDeleted: true }) : el,
+    );
+    api.updateScene({ elements: next });
+  }, elementId);
+}
