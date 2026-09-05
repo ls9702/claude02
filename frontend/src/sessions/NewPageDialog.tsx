@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import type { PageType } from "../api";
+import type { PageType, SheetTemplate } from "../api";
 
 export function NewPageDialog({
   onCancel,
   onCreate,
 }: {
   onCancel: () => void;
-  onCreate: (name: string, type: PageType) => Promise<void>;
+  onCreate: (name: string, type: PageType, template: SheetTemplate) => Promise<void>;
 }) {
   const [name, setName] = useState("");
   const [type, setType] = useState<PageType>("canvas");
+  const [template, setTemplate] = useState<SheetTemplate>("ledger");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -33,7 +34,7 @@ export function NewPageDialog({
     setBusy(true);
     setError(null);
     try {
-      await onCreate(trimmed, type);
+      await onCreate(trimmed, type, template);
     } catch (err) {
       setError(err instanceof Error ? err.message : "페이지를 만들지 못했습니다.");
       setBusy(false);
@@ -86,6 +87,33 @@ export function NewPageDialog({
             📊 시트
           </label>
         </fieldset>
+        {type === "sheet" ? (
+          <fieldset className="radio-group" data-testid="new-page-template">
+            <legend>시트 시작 방식</legend>
+            <label>
+              <input
+                type="radio"
+                name="sheet-template"
+                value="ledger"
+                checked={template === "ledger"}
+                onChange={() => setTemplate("ledger")}
+                data-testid="new-page-template-ledger"
+              />
+              💰 회비 장부 (수입·지출·잔액 자동 계산)
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="sheet-template"
+                value="blank"
+                checked={template === "blank"}
+                onChange={() => setTemplate("blank")}
+                data-testid="new-page-template-blank"
+              />
+              📄 빈 시트
+            </label>
+          </fieldset>
+        ) : null}
         {error ? (
           <p className="error" role="alert">
             {error}

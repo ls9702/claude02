@@ -1080,3 +1080,53 @@ select {
     padding: 8px 12px;
   }
 }
+
+/* ---- 시트 페이지 (M5) --------------------------------------------------- */
+.sheet-wrapper {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+}
+
+/* 우리 도구 모음 (한국어) — Fortune-sheet 자체 툴바 위에 얹는다. */
+.sheet-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  flex-wrap: wrap;
+}
+
+.sheet-toolbar .button.small {
+  padding: 3px 10px;
+  font-size: 13px;
+}
+
+.sheet-notice {
+  max-width: 420px;
+  padding: 3px 10px;
+  border-radius: 8px;
+  border: 1px solid #d5d9e0;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.sheet-canvas {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* Fortune-sheet 는 부모 높이를 채워야 캔버스 크기를 잡는다. */
+.sheet-canvas .fortune-container {
+  height: 100%;
+}

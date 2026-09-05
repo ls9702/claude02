@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
-import { api, ApiError, type Page, type PageType, type Session } from "../api";
+import { api, ApiError, type Page, type PageType, type Session, type SheetTemplate } from "../api";
 import { CanvasPage } from "../canvas/CanvasPage";
 import { collabBadge, type CollabConnection } from "../collab/status";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { Spinner } from "../components/Spinner";
 import { UserMenu } from "../components/UserMenu";
-import { SheetPlaceholder } from "../sheet/SheetPlaceholder";
+import { SheetPage } from "../sheet/SheetPage";
 import { useAuth } from "../auth/AuthContext";
 import { NewPageDialog } from "./NewPageDialog";
 import { PageTabs } from "./PageTabs";
@@ -88,8 +88,8 @@ export function SessionPage() {
   const activePage = pageId ? pages.find((p) => p.id === pageId) : undefined;
   const badge = collabBadge(collab);
 
-  const createPage = async (name: string, type: PageType) => {
-    const { page } = await api.createPage(session.id, name, type);
+  const createPage = async (name: string, type: PageType, template: SheetTemplate) => {
+    const { page } = await api.createPage(session.id, name, type, template);
     setState({ session, pages: [...pages, page] });
     setShowNewPage(false);
     navigate(`/s/${session.id}/p/${page.id}`);
@@ -165,7 +165,7 @@ export function SessionPage() {
         ) : null}
 
         <div className="spacer" />
-        {unresolvedComments > 0 ? (
+        {unresolvedComments > 0 && activePage?.type === "canvas" ? (
           <span className="pill" data-testid="comment-count" title="이 페이지의 미해결 댓글">
             💬 {unresolvedComments}
           </span>
@@ -199,7 +199,13 @@ export function SessionPage() {
             onUnresolvedComments={setUnresolvedComments}
           />
         ) : (
-          <SheetPlaceholder key={activePage.id} page={activePage} />
+          <SheetPage
+            key={activePage.id}
+            page={activePage}
+            readOnly={readOnly}
+            username={user?.username ?? "익명"}
+            onCollabState={setCollab}
+          />
         )}
       </main>
 

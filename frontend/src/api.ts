@@ -157,6 +157,28 @@ export interface SceneSaveResult extends SceneData {
   changed: boolean;
 }
 
+// ---- 시트 (M5) ----------------------------------------------------------
+
+/** 시트 페이지 종류 선택 시 고를 수 있는 템플릿 */
+export type SheetTemplate = "blank" | "ledger";
+
+/**
+ * `GET /api/pages/:id/sheet` 응답.
+ * `data` 는 우리 래퍼 스키마 `{ engine, engineVersion, sheets }` 다 (sheet/schema.ts).
+ */
+export interface SheetData {
+  data: unknown;
+  version: number;
+  updatedAt: string;
+  /** 잠긴 세션의 일반 멤버는 읽기 전용이다 */
+  readOnly: boolean;
+}
+
+export interface SheetSaveResult {
+  version: number;
+  updatedAt: string;
+}
+
 // ---- 댓글 ---------------------------------------------------------------
 
 /** 작성자 표시 (사용자가 삭제되었으면 null) */
@@ -233,10 +255,10 @@ export const api = {
   // 세션 / 페이지
   listSessions: () => request<{ sessions: SessionSummary[] }>("/api/sessions"),
   getSession: (id: string) => request<{ session: Session; pages: Page[] }>(`/api/sessions/${id}`),
-  createPage: (sessionId: string, name: string, type: PageType) =>
+  createPage: (sessionId: string, name: string, type: PageType, template?: SheetTemplate) =>
     request<{ page: Page }>(`/api/sessions/${sessionId}/pages`, {
       method: "POST",
-      body: { name, type },
+      body: type === "sheet" ? { name, type, template: template ?? "blank" } : { name, type },
     }),
   renamePage: (pageId: string, name: string) =>
     request<{ page: Page }>(`/api/pages/${pageId}`, { method: "PATCH", body: { name } }),
@@ -270,6 +292,20 @@ export const api = {
       method: "PUT",
       headers: { "Content-Type": "image/png" },
       rawBody: blob,
+    }),
+
+  // 시트
+  getSheet: (pageId: string) => request<SheetData>(`/api/pages/${pageId}/sheet`),
+  saveSheet: (
+    pageId: string,
+    data: unknown,
+    baseVersion: number,
+    opts: { keepalive?: boolean } = {},
+  ) =>
+    request<SheetSaveResult>(`/api/pages/${pageId}/sheet`, {
+      method: "PUT",
+      body: { data, baseVersion },
+      keepalive: opts.keepalive,
     }),
 
   // 파일

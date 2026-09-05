@@ -31,8 +31,15 @@ import { attachHeartbeat } from "./heartbeat.js";
 /** 이 라우트가 담당하는 경로 접두사 */
 export const COMMENT_WS_PREFIX = "/ws";
 
-/** 클라이언트가 보낼 수 있는 메시지 크기 상한 (서버→클라이언트 단방향 채널이라 작게 잡는다) */
-const MAX_WS_PAYLOAD = 4 * 1024;
+/**
+ * 클라이언트가 보낼 수 있는 메시지 크기 상한.
+ *
+ * `@fastify/websocket` 의 `maxPayload` 는 서버 전체(=모든 `/ws/*` 라우트)에 걸린다.
+ * 댓글 채널은 서버→클라이언트 단방향이라 작아도 되지만, M5 의 시트 채널
+ * (`/ws/sheet/:pageId`)은 붙여넣기 한 번이 수백 개 op 가 될 수 있어 여유가 필요하다.
+ * (시트 쪽은 op 개수·형태를 자체적으로 한 번 더 검사한다 — `sheets/ws.ts`.)
+ */
+const MAX_WS_PAYLOAD = 512 * 1024;
 
 type UpgradeListener = (req: IncomingMessage, socket: Duplex, head: Buffer) => void;
 
