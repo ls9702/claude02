@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { userIdsWithSessionAccess } from "../access.js";
+import { createBackup, KEEP_BACKUPS, listBackups } from "../backup.js";
 import { requireAdmin } from "../auth/plugin.js";
 import { checkPasswordPolicy, hashPassword } from "../auth/passwords.js";
 import { createUser, deleteAuthSessionsForUser, findUserById, findUserByUsername } from "../auth/service.js";
@@ -20,6 +21,24 @@ interface MemberParams {
 
 export async function adminRoutes(app: FastifyInstance): Promise<void> {
   app.addHook("preHandler", requireAdmin);
+
+  // ---- 백업 ------------------------------------------------------------
+  /**
+   * `VACUUM INTO` 로 DB 스냅샷을 만들고 최신 7개만 남긴다 (`DATA_DIR/backup/app-<ts>.db`).
+   * NAS 의 Task Scheduler 에서 curl 로 부르는 것을 전제로 한다 (OPERATIONS.md).
+   * 업로드 파일(`DATA_DIR/files`)은 볼륨 그대로 rsync 한다 — 여기서 건드리지 않는다.
+   */
+  app.post("/api/admin/backup", async (req) => {
+    const result = createBackup(app.db, app.config.dataDir, KEEP_BACKUPS);
+    req.log.info({ file: result.file, bytes: result.bytes, removed: result.removed.length }, "db backup");
+    return { ok: true, ...result, keep: KEEP_BACKUPS };
+  });
+
+  /** 지금 남아 있는 백업 목록 (최신 순) — 복원 전에 무엇이 있는지 보기 위한 것. */
+  app.get("/api/admin/backup", async () => ({
+    backups: listBackups(app.config.dataDir),
+    keep: KEEP_BACKUPS,
+  }));
 
   // ---- 사용자 ----------------------------------------------------------
   app.get("/api/admin/users", async () => {

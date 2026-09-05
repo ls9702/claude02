@@ -8,6 +8,8 @@
     "dev": "vite",
     "prebuild": "node scripts/copy-excalidraw-assets.mjs",
     "build": "vite build",
+    "postbuild": "node scripts/precompress.mjs",
+    "build:e2e": "vite build --mode e2e && node scripts/precompress.mjs",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import fastifyMultipart from "@fastify/multipart";
 import fastifyRateLimit from "@fastify/rate-limit";
 import fastifyStatic from "@fastify/static";
@@ -18,6 +18,8 @@ import { loadConfig, MAX_FILE_BYTES, MAX_THUMBNAIL_BYTES, type AppConfig } from 
 import { openDatabase } from "./db/index.js";
 import { ApiError, forbidden } from "./errors.js";
 import { fileRoutes } from "./files/routes.js";
+import { healthRoutes } from "./health.js";
+import { buildCsp, inlineScriptHashes, staticCacheControl } from "./security.js";
 import { sceneRoutes } from "./scenes/routes.js";
 import { sessionRoutes } from "./sessions/routes.js";
 import { SessionSocketRegistry } from "./sessions/sockets.js";
@@ -112,10 +114,23 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   });
 
   // 클릭재킹 방지 — 이 앱은 어디에도 임베드되지 않는다.
-  // (전체 CSP 는 배포 단계(M6)에서 리버스 프록시와 함께 정한다 — KNOWN_ISSUES.md 참고.)
   app.addHook("onSend", async (_req, reply) => {
     if (!reply.getHeader("X-Frame-Options")) reply.header("X-Frame-Options", "DENY");
   });
+
+  // CSP 는 **프로덕션에서만** 붙인다 (M6, KNOWN_ISSUES.md 5번).
+  // dev 는 Vite HMR(인라인 스크립트·eval)과 5173↔3001 교차 오리진이라 같은 정책을 쓸 수 없고,
+  // e2e(dev 모드)에도 영향이 가지 않아야 한다.
+  if (config.isProduction) {
+    const csp = buildCsp({
+      scriptHashes: inlineScriptHashes(join(frontendDistDir(), "index.html")),
+      publicUrl: config.publicUrl,
+    });
+    app.addHook("onSend", async (_req, reply) => {
+      // `GET /files/:id` 는 업로드 콘텐츠용 더 엄격한 CSP 를 이미 붙인다 — 덮어쓰지 않는다.
+      if (!reply.getHeader("Content-Security-Policy")) reply.header("Content-Security-Policy", csp);
+    });
+  }
 
   app.setErrorHandler((raw, req, reply) => {
     const error = raw as Error & { code?: string; statusCode?: number };
@@ -171,17 +186,22 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   await app.register(sheetWebsocket);
   await app.register(sessionWebsocket);
 
-  app.get("/api/health", async () => ({ ok: true }));
+  await app.register(healthRoutes);
 
   await registerStatic(app, config);
 
   return app;
 }
 
-async function registerStatic(app: FastifyInstance, config: AppConfig): Promise<void> {
-  const distDir = process.env.FRONTEND_DIST
+/** 정적 SPA 산출물 경로 (`FRONTEND_DIST`, 기본은 저장소 배치 기준 `../frontend/dist`) */
+export function frontendDistDir(): string {
+  return process.env.FRONTEND_DIST
     ? resolve(process.cwd(), process.env.FRONTEND_DIST)
     : resolve(process.cwd(), "../frontend/dist");
+}
+
+async function registerStatic(app: FastifyInstance, config: AppConfig): Promise<void> {
+  const distDir = frontendDistDir();
   if (!config.isProduction || !existsSync(distDir)) {
     app.setNotFoundHandler(async (_req, reply) => {
       return reply.code(404).send({ error: { code: "not_found", message: "요청한 경로를 찾을 수 없습니다." } });
@@ -189,7 +209,21 @@ async function registerStatic(app: FastifyInstance, config: AppConfig): Promise<
     return;
   }
 
-  await app.register(fastifyStatic, { root: distDir, prefix: "/", index: ["index.html"] });
+  // `preCompressed` — 빌드 때 만들어 둔 `*.br`/`*.gz` 를 그대로 흘려보낸다.
+  // 런타임 압축(@fastify/compress)을 쓰지 않는 이유: DS118 은 1.4GHz A53 4코어라
+  // 요청마다 3MB 청크를 brotli 로 미는 비용이 그대로 응답 지연이 된다.
+  // 빌드 시 한 번 압축해 두면 NAS 는 파일을 읽어 보내기만 한다.
+  await app.register(fastifyStatic, {
+    root: distDir,
+    prefix: "/",
+    index: ["index.html"],
+    preCompressed: true,
+    // @fastify/static 의 기본 Cache-Control 대신 파일별로 직접 정한다.
+    cacheControl: false,
+    setHeaders: (reply, filePath) => {
+      reply.header("Cache-Control", staticCacheControl(filePath));
+    },
+  });
 
   // SPA fallback — API/파일/WS 경로는 제외한다.
   app.setNotFoundHandler(async (req, reply) => {

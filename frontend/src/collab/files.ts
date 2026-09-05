@@ -76,6 +76,17 @@ export class FileManager {
     this.erroredFiles_fetch.has(id) ||
     this.erroredFiles_save.has(id);
 
+  /**
+   * 지금 내려받는 중이거나, 내려받다 실패한 파일인가.
+   *
+   * "다시 내려받을 필요가 있는가" 는 `isFileTracked` 로 판단하면 안 된다 —
+   * `markSaved`(아래)가 **내용 없이** 서버 존재 사실만 심어 두기 때문이다.
+   * 내용 보유 여부는 씬의 파일 저장소(`excalidrawAPI.getFiles()`)로 판단하고,
+   * 중복 요청만 이 메서드로 막는다.
+   */
+  isFileBeingFetched = (id: FileId): boolean =>
+    this.fetchingFiles.has(id) || this.erroredFiles_fetch.has(id);
+
   isFileSavedOrBeingSaved = (file: BinaryFileData): boolean => {
     const fileVersion = this.getFileVersion(file);
     return (

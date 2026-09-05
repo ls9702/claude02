@@ -14,5 +14,5 @@
     "resolveJsonModule": true,
     "noEmit": true
   },
-  "include": ["tests", "playwright.config.ts", "globals.d.ts"]
+  "include": ["tests", "prod-tests", "playwright.config.ts", "playwright.prod.config.ts", "globals.d.ts"]
 }

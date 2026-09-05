@@ -4,7 +4,15 @@ import { fileURLToPath } from "node:url";
 import { expect, type APIRequestContext, type Page, type PlaywrightWorkerArgs } from "@playwright/test";
 
 const here = dirname(fileURLToPath(import.meta.url));
-export const STATE_DIR = resolve(here, "..", ".state");
+
+/**
+ * 로그인 상태·픽스처를 두는 곳. 기본은 `e2e/.state` 다.
+ * 프로덕션 스모크(`playwright.prod.config.ts`)는 다른 DB·다른 포트로 도는 별개 실행이라
+ * `E2E_STATE_DIR` 로 `.state-prod` 를 쓴다 — dev e2e 의 상태를 덮어쓰지 않게 한다.
+ */
+export const STATE_DIR = resolve(here, "..", process.env.E2E_STATE_DIR ?? ".state");
+/** 앱 오리진. dev 는 Vite(5173), 프로덕션 스모크는 app 이 직접 서빙한다(3901). */
+export const APP_BASE_URL = process.env.E2E_BASE_URL ?? "http://localhost:5173";
 
 export const ADMIN_STATE = resolve(STATE_DIR, "admin.json");
 export const ALICE_STATE = resolve(STATE_DIR, "alice.json");
@@ -41,7 +49,7 @@ export function ensureStateDir(): void {
 /** 관리자 권한으로 API 를 직접 호출하는 컨텍스트 */
 export async function adminApi(playwright: PlaywrightWorkerArgs["playwright"]): Promise<APIRequestContext> {
   return playwright.request.newContext({
-    baseURL: "http://localhost:5173",
+    baseURL: APP_BASE_URL,
     storageState: ADMIN_STATE,
   });
 }

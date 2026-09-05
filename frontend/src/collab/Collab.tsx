@@ -57,6 +57,8 @@ import {
   INITIAL_SCENE_UPDATE_TIMEOUT,
   KEEPALIVE_MAX_BYTES,
   LOAD_IMAGES_TIMEOUT,
+  RESTORE_IMAGES_MAX_ATTEMPTS,
+  RESTORE_IMAGES_RETRY_MS,
   ROOM_RECHECK_MS,
   SAVE_DEBOUNCE_MS,
   SCENE_POLL_MS,
@@ -499,11 +501,19 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
      */
     forceFetchFiles?: boolean;
   }) => {
+    // 이미 **내용을 갖고 있는** 파일만 건너뛴다.
+    // 업스트림은 `fileManager.isFileTracked()` 를 썼지만, 우리는 `seedSavedFiles()` 가
+    // `files/exists` 결과를 내용 없이 "저장됨" 으로 심기 때문에(재업로드 방지) 그 집합을
+    // 그대로 쓰면 **서버에 있는 이미지를 영원히 내려받지 않는다**.
+    // 개발 모드에서는 StrictMode 의 두 번째 마운트가 이 순서를 우연히 뒤집어 가려 왔다
+    // (M6 프로덕션 스모크에서 발견 — `e2e/prod-tests/02-app-smoke.spec.ts` 의 「이미지」 테스트).
+    const loaded = this.excalidrawAPI.getFiles();
     const unfetchedImages = opts.elements
       .filter((element) => {
         return (
           isInitializedImageElement(element) &&
-          !this.fileManager.isFileTracked(element.fileId) &&
+          !loaded[element.fileId] &&
+          !this.fileManager.isFileBeingFetched(element.fileId) &&
           !element.isDeleted &&
           (opts.forceFetchFiles
             ? element.status !== "pending" || Date.now() - element.updated > 10000
@@ -957,8 +967,20 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
   /**
    * 페이지를 열 때 한 번 — 저장된 이미지를 서버에서 되살린다.
    * `forceFetchFiles` 로 status 가 `pending` 인 채 저장된 요소까지 챙긴다.
+   *
+   * Excalidraw 는 `initialData` 를 씬에 한 박자 뒤에 반영하므로, 마운트 직후에는 씬이
+   * 아직 비어 있을 수 있다. 씬에 요소가 나타날 때까지 짧게 기다렸다가 복원한다
+   * (자세한 배경은 `constants.ts` 의 RESTORE_IMAGES_* 주석 참고).
    */
   private restoreImageFiles = async (): Promise<void> => {
+    const generation = this.generation;
+    for (let attempt = 0; attempt < RESTORE_IMAGES_MAX_ATTEMPTS; attempt += 1) {
+      if (this.unmounted || this.generation !== generation) return;
+      if (this.excalidrawAPI.getSceneElementsIncludingDeleted().length > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, RESTORE_IMAGES_RETRY_MS));
+    }
+    if (this.unmounted || this.generation !== generation) return;
+
     const { loadedFiles, erroredFiles } = await this.fetchImageFilesFromServer({
       elements: this.excalidrawAPI.getSceneElementsIncludingDeleted(),
       forceFetchFiles: true,

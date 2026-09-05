@@ -15,7 +15,8 @@
     "start": "npm run start -w backend",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "e2e": "npm run e2e -w e2e"
+    "e2e": "npm run e2e -w e2e",
+    "e2e:prod": "npm run build -w backend && npm run build -w room && npm run build:e2e -w frontend && npm run e2e:prod -w e2e"
   },
   "devDependencies": {
     "concurrently": "10.0.5",
