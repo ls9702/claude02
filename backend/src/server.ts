@@ -5,6 +5,7 @@ import fastifyRateLimit from "@fastify/rate-limit";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 import { adminRoutes } from "./admin/routes.js";
+import { aiRoutes } from "./ai/routes.js";
 import authPlugin from "./auth/plugin.js";
 import { authRoutes } from "./auth/routes.js";
 import { bootstrapAdmin, purgeExpiredSessions } from "./auth/service.js";
@@ -154,6 +155,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   await app.register(sceneRoutes);
   await app.register(fileRoutes);
   await app.register(commentRoutes);
+  await app.register(aiRoutes);
   await app.register(socketIoProxy);
   // socketIoProxy 다음에 등록한다 — upgrade 리스너 공존 처리는 commentWebsocket 안에 있다.
   await app.register(commentWebsocket);

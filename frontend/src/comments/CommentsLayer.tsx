@@ -11,6 +11,8 @@
  *   계산은 `requestAnimationFrame` 으로 한 프레임에 한 번만 한다.
  * - **고아 전환**: 앵커 요소가 삭제되면 핀은 마지막 위치에 남고 "요소 삭제됨" 을 표시한다.
  *   이때 저장 좌표를 **한 번만** 서버에 반영한다(이후에는 좌표 앵커처럼 동작한다).
+ * - **겹침**: 같은 지점에 붙은 핀은 `cluster.ts` 가 생성 순서대로 가로로 펼친다 — 겹쳐서
+ *   아래 핀을 클릭할 수 없는 일이 없게 한다(팝오버는 원래 앵커가 아니라 펼친 위치에 연다).
  */
 import { CaptureUpdateAction, sceneCoordsToViewportCoords, viewportCoordsToSceneCoords } from "@excalidraw/excalidraw";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
@@ -34,6 +36,7 @@ import {
   needsOrphanCoordUpdate,
   type AnchorElement,
 } from "./anchor";
+import { fanOutPins } from "./cluster";
 import { CommentsSidebar } from "./CommentsSidebar";
 import { CommentThread } from "./CommentThread";
 import { colorOf, initialOf } from "./format";
@@ -68,6 +71,9 @@ interface Pin extends Placement {
   orphaned: boolean;
   sceneX: number;
   sceneY: number;
+  /** 같은 지점에 겹친 핀 묶음에서의 순서·크기 (겹치지 않았으면 0 / 1) */
+  clusterIndex: number;
+  clusterSize: number;
 }
 
 interface Draft {
@@ -138,17 +144,20 @@ export const CommentsLayer = forwardRef<CommentsLayerHandle, CommentsLayerProps>
       };
 
       setSize({ width: appState.width, height: appState.height });
+      // 목록은 생성 순서(created_at ASC)다 — 겹친 핀은 그 순서대로 오른쪽으로 펼쳐진다.
       setPins(
-        visible.map((comment) => {
-          const point = anchorScenePoint(comment, index);
-          return {
-            comment,
-            orphaned: point.orphaned,
-            sceneX: point.sceneX,
-            sceneY: point.sceneY,
-            ...place(point.sceneX, point.sceneY),
-          };
-        }),
+        fanOutPins(
+          visible.map((comment) => {
+            const point = anchorScenePoint(comment, index);
+            return {
+              comment,
+              orphaned: point.orphaned,
+              sceneX: point.sceneX,
+              sceneY: point.sceneY,
+              ...place(point.sceneX, point.sceneY),
+            };
+          }),
+        ),
       );
 
       if (draft) {
@@ -332,6 +341,8 @@ export const CommentsLayer = forwardRef<CommentsLayerHandle, CommentsLayerProps>
                 data-comment-id={pin.comment.id}
                 data-resolved={pin.comment.resolved ? "1" : "0"}
                 data-orphaned={pin.orphaned ? "1" : "0"}
+                data-cluster-index={pin.clusterIndex}
+                data-cluster-size={pin.clusterSize}
                 title={pin.comment.body}
                 onClick={() => setOpenId((prev) => (prev === pin.comment.id ? null : pin.comment.id))}
               >

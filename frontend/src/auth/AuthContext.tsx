@@ -6,6 +6,7 @@ import {
   setUnauthorizedHandler,
   type User,
 } from "../api";
+import { refreshAiCapability, setAiAvailable } from "../ai/aiSettings";
 
 interface AuthState {
   user: User | null;
@@ -63,6 +64,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(null);
     }
   }, []);
+
+  // AI 능력 확인은 로그인 상태가 정해진 뒤 **한 번만** 한다 (PLAN §2.6 의 "한 번의 ping").
+  // 로그아웃하면 즉시 없음으로 되돌린다 — ✨ 버튼이 남아 있지 않게.
+  useEffect(() => {
+    if (!user || user.must_change_password) {
+      setAiAvailable(false);
+      return;
+    }
+    void refreshAiCapability();
+  }, [user?.id, user?.must_change_password, user?.ai_allowed]);
 
   const value = useMemo<AuthState>(
     () => ({ user, loading, login, logout, refresh, setUser }),

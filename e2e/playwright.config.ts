@@ -11,6 +11,8 @@ const roomDir = resolve(repoRoot, "room");
 const DATA_DIR = resolve(here, ".tmp/data");
 
 export const BASE_URL = "http://localhost:5173";
+/** E2E 용 가짜 Gemini (`e2e/mock-gemini.mjs`) — 진짜 Google 을 부르지 않는다. */
+export const MOCK_GEMINI_URL = "http://127.0.0.1:3003";
 export const STATE_DIR = resolve(here, ".state");
 
 export default defineConfig({
@@ -63,7 +65,20 @@ export default defineConfig({
         COOKIE_SECURE: "false",
         PUBLIC_URL: BASE_URL,
         ROOM_URL: "http://127.0.0.1:3002",
+        // AI 프록시는 켜 두되 업스트림만 가짜로 바꾼다 (키는 서버에만 있다는 구조 그대로).
+        GEMINI_API_KEY: "e2e-test-key",
+        GEMINI_BASE_URL: MOCK_GEMINI_URL,
       },
+    },
+    {
+      command: "node mock-gemini.mjs",
+      cwd: here,
+      url: `${MOCK_GEMINI_URL}/health`,
+      reuseExistingServer: false,
+      timeout: 30_000,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { PORT: "3003", HOST: "127.0.0.1" },
     },
     {
       // 실시간 협업 릴레이. 브라우저는 여기에 직접 붙지 않고 app 의 /socket.io 프록시를 거친다.

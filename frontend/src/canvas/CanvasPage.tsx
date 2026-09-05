@@ -14,6 +14,8 @@ import type {
   Gesture,
 } from "@excalidraw/excalidraw/types";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AiAskSheet } from "../ai/AiAskSheet";
+import { useAiEnabled } from "../ai/aiSettings";
 import { api, ApiError, type Page } from "../api";
 import { Collab, type CollabPublicState, type SaveStatus } from "../collab/Collab";
 import { collabNotice } from "../collab/status";
@@ -73,6 +75,9 @@ export function CanvasPage({
   const [initialData, setInitialData] = useState<ExcalidrawInitialDataState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [collabState, setCollabState] = useState<CollabPublicState>(INITIAL_COLLAB_STATE);
+  const [aiOpen, setAiOpen] = useState(false);
+  // ✨ 는 세 조건(사용자 토글 · 서버 키 · 계정 허용)이 모두 참일 때만 나온다 (PLAN §2.6).
+  const aiEnabled = useAiEnabled();
 
   const collabRef = useRef<Collab | null>(null);
   const commentsRef = useRef<CommentsLayerHandle | null>(null);
@@ -109,6 +114,14 @@ export function CanvasPage({
       cancelled = true;
     };
   }, [page.id]);
+
+  useEffect(() => {
+    setAiOpen(false);
+  }, [page.id]);
+
+  useEffect(() => {
+    if (!aiEnabled) setAiOpen(false);
+  }, [aiEnabled]);
 
   // ---- 썸네일 -----------------------------------------------------------
   const maybeUploadThumbnail = useCallback(async () => {
@@ -245,6 +258,29 @@ export function CanvasPage({
         onPointerUpdate={onPointerUpdate}
         UIOptions={{ canvasActions: { loadScene: false } }}
       />
+      {aiEnabled && excalidrawAPI ? (
+        <div className="ai-toolbar">
+          <button
+            type="button"
+            className={`button small${aiOpen ? " primary" : ""}`}
+            data-testid="ai-open"
+            aria-pressed={aiOpen}
+            title="AI에게 묻고 답을 카드로 붙입니다"
+            onClick={() => setAiOpen((prev) => !prev)}
+          >
+            ✨ AI
+          </button>
+        </div>
+      ) : null}
+      {aiEnabled && aiOpen && excalidrawAPI ? (
+        <AiAskSheet
+          pageId={page.id}
+          excalidrawAPI={excalidrawAPI}
+          username={username}
+          readOnly={readOnly}
+          onClose={() => setAiOpen(false)}
+        />
+      ) : null}
       {excalidrawAPI ? (
         <CommentsLayer
           ref={commentsRef}

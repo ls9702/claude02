@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   anchorScenePoint,
   elementAnchor,
+  hitTestElement,
   hitTestTopmost,
   indexElements,
   needsOrphanCoordUpdate,
@@ -143,5 +144,56 @@ describe("표시 helper", () => {
   it("잘못된 시각 문자열은 빈 문자열", () => {
     expect(formatTime("nope")).toBe("");
     expect(formatTime(new Date("2026-09-05T03:04:00Z").toISOString())).not.toBe("");
+  });
+});
+
+describe("회전한 요소", () => {
+  /** 중심 (200,200), 한 변 200 인 정사각형을 45° 돌린 것 */
+  const square45 = el({
+    id: "rot",
+    x: 100,
+    y: 100,
+    width: 200,
+    height: 200,
+    angle: Math.PI / 4,
+  });
+
+  it("앵커(우상단)도 중심을 기준으로 함께 돈다", () => {
+    // 우상단 (300,100) 은 중심에서 (100,-100) → 45° 회전 후 (141.42, 0) → 씬 좌표 (341.42, 200)
+    const anchor = elementAnchor(square45);
+    expect(anchor.sceneX).toBeCloseTo(200 + Math.sqrt(2) * 100, 6);
+    expect(anchor.sceneY).toBeCloseTo(200, 6);
+  });
+
+  it("회전이 없으면 예전과 같은 우상단이다", () => {
+    expect(elementAnchor(el({ id: "a", x: 5, y: 6, width: 20, height: 30, angle: 0 }))).toEqual({
+      sceneX: 25,
+      sceneY: 6,
+    });
+  });
+
+  it("45° 회전한 사각형의 실제 꼭짓점 근처는 히트한다 (예전에는 빗나갔다)", () => {
+    // 회전 후 위쪽 꼭짓점: 중심에서 위로 반대각선(141.42) → y ≈ 58.58 (예전 bbox 는 y>=100 만 인정)
+    const apexY = 200 - Math.sqrt(2) * 100;
+    expect(hitTestElement(square45, 200, apexY + 1)).toBe(true);
+    expect(hitTestTopmost([square45], 200, apexY + 1)?.id).toBe("rot");
+  });
+
+  it("45° 회전한 사각형 바깥(축 정렬 bbox 의 모서리)은 히트하지 않는다", () => {
+    // (105,105) 는 비회전 bbox 안이지만 회전한 다이아몬드 바깥이다.
+    expect(hitTestElement(square45, 105, 105)).toBe(false);
+    expect(hitTestTopmost([square45], 105, 105)).toBeNull();
+  });
+
+  it("중심은 회전과 무관하게 항상 히트한다", () => {
+    expect(hitTestElement(square45, 200, 200)).toBe(true);
+  });
+
+  it("회전한 직사각형은 짧은 축 방향으로도 정확히 판정한다", () => {
+    // 200×40 을 90° 돌리면 화면상 40×200 이 된다.
+    const rotated = el({ id: "r90", x: 0, y: 0, width: 200, height: 40, angle: Math.PI / 2 });
+    // 세로로 길어진 자리(중심 위 80px)는 히트, 가로로 멀어진 자리(중심 오른쪽 80px)는 미스
+    expect(hitTestElement(rotated, 100, 20 - 80)).toBe(true);
+    expect(hitTestElement(rotated, 100 + 80, 20)).toBe(false);
   });
 });

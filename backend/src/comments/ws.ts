@@ -5,6 +5,9 @@
  * 채우고, 라우트 preHandler 가 `requireAuth` + `requirePageAccess` 를 지난다.
  * 실패하면 업그레이드 대신 401/403/404 JSON 이 소켓에 쓰이고 연결이 닫힌다.
  *
+ * 하트비트: `heartbeat.ts` 가 `COMMENT_WS_PING_MS`(기본 30초) 주기로 ping 을 보내고
+ * pong 을 추적한다 — 연속 2회 놓친 소켓은 `terminate()` 로 끊어 좀비 구독을 치운다.
+ *
  * ⚠️ upgrade 리스너 공존
  * `@fastify/websocket` 은 서버의 **모든** upgrade 를 가로채 `fastify.routing()` 으로
  * 흘려보낸다. 그런데 이 서버에는 `/socket.io/*` 를 담당하는 `@fastify/http-proxy` 의
@@ -23,15 +26,13 @@ import type { WebSocket } from "ws";
 import { requirePageAccess } from "../access.js";
 import { requireAuth } from "../auth/plugin.js";
 import { SOCKET_IO_PREFIX } from "../collab/proxy.js";
+import { attachHeartbeat } from "./heartbeat.js";
 
 /** 이 라우트가 담당하는 경로 접두사 */
 export const COMMENT_WS_PREFIX = "/ws";
 
 /** 클라이언트가 보낼 수 있는 메시지 크기 상한 (서버→클라이언트 단방향 채널이라 작게 잡는다) */
 const MAX_WS_PAYLOAD = 4 * 1024;
-
-/** 유휴 연결이 프록시에서 끊기지 않도록 보내는 ping 주기 */
-const PING_INTERVAL_MS = 30_000;
 
 type UpgradeListener = (req: IncomingMessage, socket: Duplex, head: Buffer) => void;
 
@@ -82,17 +83,13 @@ async function commentWebsocketPlugin(app: FastifyInstance): Promise<void> {
       const { pageId } = req.params;
       const dispose = app.commentSockets.add(pageId, user.id, socket);
 
-      const ping = setInterval(() => {
-        try {
-          socket.ping();
-        } catch {
-          // 닫히는 중이면 무시한다 — close 핸들러가 정리한다.
-        }
-      }, PING_INTERVAL_MS);
-      ping.unref?.();
+      // ping 주기마다 pong 을 확인하고, 연속 2회 놓친 소켓은 끊는다 (heartbeat.ts).
+      const stopHeartbeat = attachHeartbeat(socket, {
+        intervalMs: app.config.commentWsPingMs,
+      });
 
       const cleanup = () => {
-        clearInterval(ping);
+        stopHeartbeat();
         dispose();
       };
       socket.on("close", cleanup);

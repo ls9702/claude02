@@ -196,6 +196,15 @@ export interface NewCommentInput {
   body: string;
 }
 
+/** `GET /api/admin/ai/stats` — 관리자 화면의 AI 상태·일별 호출 수 */
+export interface AiStats {
+  /** 서버에 Gemini 키가 있는가 */
+  configured: boolean;
+  model: string;
+  rateLimitPerMin: number;
+  daily: Array<{ day: string; count: number }>;
+}
+
 export interface CommentPatch {
   body?: string;
   resolved?: boolean;
@@ -307,6 +316,8 @@ export const api = {
   adminUpdateUser: (id: string, patch: { role?: Role; ai_allowed?: boolean; password?: string }) =>
     request<{ user: User }>(`/api/admin/users/${id}`, { method: "PATCH", body: patch }),
   adminDeleteUser: (id: string) => request<{ ok: true }>(`/api/admin/users/${id}`, { method: "DELETE" }),
+
+  adminAiStats: () => request<AiStats>("/api/admin/ai/stats"),
 
   adminListSessions: () => request<{ sessions: AdminSession[] }>("/api/admin/sessions"),
   adminCreateSession: (name: string) =>

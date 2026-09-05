@@ -55,6 +55,11 @@ Vite dev 서버는 `/api`, `/files`, `/ws`, `/socket.io`(WebSocket 포함)를 �
 | `PUBLIC_URL` | `http://localhost:5173` | 프론트 공개 주소 |
 | `ROOM_URL` | `http://127.0.0.1:3002` | excalidraw-room 주소 (`/socket.io` 프록시 업스트림) |
 | `FRONTEND_DIST` | `../frontend/dist` | 프로덕션 정적 파일 경로 (backend cwd 기준) |
+| `GEMINI_API_KEY` | (없음) | **AI 검색 카드 (M4).** 비어 있으면 AI 기능 전체가 꺼진다(`/api/ai/ping` → `{ai:false}`, ✨ 버튼 없음). 키는 **서버에만** 있고 브라우저로 내려가지 않는다 |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | 호출할 Gemini 모델 |
+| `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com` | 업스트림 주소. E2E 는 `e2e/mock-gemini.mjs` 를 가리킨다 |
+| `AI_RATE_LIMIT_PER_MIN` | `20` | AI 호출 분당 퓨즈 (사용자 무관 **전체 합**, 폭주 방지용) |
+| `COMMENT_WS_PING_MS` | `30000` | 댓글 WebSocket ping 주기. pong 을 연속 2회 놓친 소켓은 서버가 끊는다 |
 | `NODE_ENV` | `development` | `production` 이면 정적 서빙 + SPA fallback 활성화 |
 
 ## API 요약
@@ -97,6 +102,10 @@ PATCH  /api/comments/:id                {body?, resolved?, x?, y?} → {comment}
 DELETE /api/comments/:id
 POST   /api/comments/:id/replies        {body} → {reply}
 DELETE /api/replies/:id
+
+GET    /api/ai/ping                     → {ai:boolean}  (로그인 필수. 서버 키 + 내 계정의 ai_allowed)
+POST   /api/ai/ask                      {pageId, prompt, grounding, context?} → **Gemini 응답 그대로**
+GET    /api/admin/ai/stats              → {configured, model, rateLimitPerMin, daily:[{day,count}]}
 
 GET    /ws/comments/:pageId             → 댓글 실시간 채널 (WebSocket, 쿠키 인증 + 페이지 권한)
 ANY    /socket.io/*                     → room 릴레이 프록시 (로그인 필수, 폴링·WS 업그레이드 모두)
@@ -169,10 +178,16 @@ ANY    /socket.io/*                     → room 릴레이 프록시 (로그인 
 - **좌표 변환**: `sceneCoordsToViewportCoords` / `viewportCoordsToSceneCoords` 를 쓰고, 최신 `appState` 는
   Excalidraw `onChange` 에서 받는다. 줌·스크롤·요소 이동이 이어져도 재계산은 `requestAnimationFrame` 으로 프레임당 한 번이다.
 - **작성**: "💬 댓글" 버튼을 누르면 오버레이가 캔버스를 덮어 클릭을 가로챈다(Excalidraw 로 내려가지 않는다).
-  클릭 지점에 요소가 있으면(최상단 우선, 축 정렬 bbox 판정) 요소 앵커, 없으면 좌표 앵커가 된다. 저장·취소·ESC 로 모드가 풀린다.
+  클릭 지점에 요소가 있으면(최상단 우선) 요소 앵커, 없으면 좌표 앵커가 된다. 저장·취소·ESC 로 모드가 풀린다.
+  요소가 **회전**해 있으면 클릭 지점을 요소의 로컬 좌표계로 되돌려 판정하고, 핀도 회전한 우상단에 붙는다.
+- **겹친 핀**: 화면에서 12px 안으로 겹치는 핀은 생성 순서대로 26px 씩 가로로 펼친다
+  (`frontend/src/comments/cluster.ts`, 순수 함수 + 단위 테스트). 아래 핀도 항상 직접 누를 수 있다.
+- **터치 기기**: `@media (pointer: coarse)` 에서 핀·댓글 모드·목록 버튼의 탭 타겟이 40px 이상이 된다(데스크톱 모양은 그대로).
 - **실시간**: `/ws/comments/:pageId` (@fastify/websocket). 서버가 pageId 별 구독자를 들고 있다가
   `{type:'comment.created'|'comment.updated'|'comment.deleted'|'reply.created'|'reply.deleted', payload}` 를
   **발신자 포함** 같은 페이지 접속자에게 보낸다. 클라이언트는 끊기면 지수 백오프로 재접속하고, 다시 붙을 때 목록을 새로 읽는다.
+  서버는 `COMMENT_WS_PING_MS`(기본 30초) 주기로 ping 을 보내고 pong 을 추적한다 — **연속 2회 놓친 소켓은 끊어**
+  좀비 구독을 치운다(`backend/src/comments/heartbeat.ts`, 상태 기계는 순수 함수).
 - **권한**: 읽기는 세션 멤버, 작성·답글은 멤버(잠긴 세션은 관리자만 — `403 session_locked`),
   본문 수정·삭제는 작성자 또는 관리자, **해결/해결 취소는 멤버 누구나(잠긴 세션에서도 허용)**.
 - **배지**: 상단 바에 현재 페이지의 미해결 수(💬 N), 세션 목록 카드에 세션 전체의 미해결 수
@@ -184,6 +199,28 @@ ANY    /socket.io/*                     → room 릴레이 프록시 (로그인 
 `/socket.io` 프록시(`@fastify/http-proxy`)도 같은 일을 한다. 둘을 그대로 두면 하나의 upgrade 가 라우터에
 두 번 들어가므로, `backend/src/comments/ws.ts` 가 `@fastify/websocket` 이 등록한 리스너를 감싸
 **`/ws/*` 만** 처리하게 바꾼다(그 밖의 경로는 프록시가 가져가거나, 아무도 담당하지 않으면 소켓을 끊는다).
+
+## AI 검색 카드 (M4)
+
+질문을 하면 Gemini 가 답하고, 그 답을 **평범한 Excalidraw 요소 묶음**(카드)으로 캔버스에 넣는다.
+
+- **키는 서버에만**: 브라우저는 `/api/ai/*` 만 부른다. 서버가 `GEMINI_API_KEY` 를 붙여 업스트림
+  `generateContent` 를 호출하고 **응답을 그대로 전달**한다 — 응답 파싱은 프론트 한 곳(`frontend/src/ai/aiClient.ts`)에서만 한다.
+- **3중 게이트**: 사용자 토글(`localStorage: whiteboard/ai-enabled`) **and** 서버에 키 있음 **and** `users.ai_allowed`.
+  세 조건이 모두 참일 때만 ✨ 버튼이 나온다(`GET /api/ai/ping` 한 번으로 뒤 두 개를 확인).
+- **권한**: `POST /api/ai/ask` 는 로그인 + `pageId` 접근 권한(`requirePageAccess`) + `ai_allowed` 를 모두 지나야 한다.
+- **안전 장치**: 본문 64KB(413), 질문 500자·컨텍스트 2000자(400), 분당 퓨즈 `AI_RATE_LIMIT_PER_MIN`회(429 `rate`),
+  업스트림 타임아웃 30초/클라이언트 35초, 업스트림 오류 본문은 400자로 잘라 전달(401·403 은 `auth` 로 구분).
+- **형식 규약**: 검색 그라운딩(`google_search`)과 JSON 스키마는 함께 쓸 수 없으므로 카드 형식은 **프롬프트 규약**으로 얻는다 —
+  서버가 고정한 `systemInstruction`("첫 줄 30자 이내 제목, 이어서 3~6개 불릿, 각 80자 이내, 한국어",
+  `backend/src/ai/prompts.ts`). 프론트 파서(`parseCard`)는 규약을 어긴 답변도 **첫 문장을 제목, 나머지를 불릿**으로 폴백해
+  반드시 카드를 만든다.
+- **카드의 실체**: 둥근 사각형 + 제목·본문·출처 텍스트를 같은 `groupIds` 로 묶고 `customData.aiCard = {query, at, by}` 를 남긴
+  일반 요소다(`frontend/src/ai/cardBuilder.ts` 가 배치를 계산하고 `insertCard.ts` 가 `convertToExcalidrawElements` 로 만든다).
+  출처는 요소의 `link` 속성이라 클릭하면 열린다. **협업 동기화·저장·내보내기는 기존 경로가 그대로 처리한다 — AI 전용 저장 로직이 없다.**
+- **저장하지 않는 것**: 질문과 답변. 시트를 닫으면 사라지고, 캔버스에 넣은 카드만 씬 데이터가 된다.
+  서버는 `ai_calls_daily` 에 **호출 수만** 센다(관리자 화면 표시용).
+- **관리자**: 사용자 표에서 계정별 AI 허용을 끄고 켤 수 있고, 사용자 탭 위에 서버 키 유무·모델·최근 7일 호출 수가 뜬다.
 
 ## Excalidraw 폰트 자체 호스팅
 
@@ -201,5 +238,7 @@ npm test            # vitest (backend + frontend)
 npm run e2e         # Playwright 시나리오
 ```
 
-E2E 는 `e2e/.tmp/data` 를 비우고 백엔드(`ADMIN_PASSWORD=admin1234`)·room(3002)·Vite dev 서버(`VITE_E2E=1`)를 직접 띄운다.
+E2E 는 `e2e/.tmp/data` 를 비우고 백엔드(`ADMIN_PASSWORD=admin1234`)·room(3002)·가짜 Gemini(`e2e/mock-gemini.mjs`, 3003)·
+Vite dev 서버(`VITE_E2E=1`)를 직접 띄운다. AI 시나리오는 진짜 Google 을 부르지 않는다 —
+백엔드의 `GEMINI_BASE_URL` 이 모킹 서버를 가리키고 키는 `e2e-test-key` 다.
 Chromium 은 `PLAYWRIGHT_BROWSERS_PATH` 에 미리 설치된 것을 사용한다.

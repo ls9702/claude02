@@ -643,15 +643,20 @@ select {
 }
 
 /*
- * 핀은 앵커 지점에 "중심" 이 오도록 놓는다. 백분율(-50%) 대신 핀 크기의 절반(13px)을
+ * 핀은 앵커 지점에 "중심" 이 오도록 놓는다. 백분율(-50%) 대신 핀 크기의 절반을
  * 쓰는 이유: 옆에 "요소 삭제됨" 배지가 붙으면 래퍼 폭이 달라져 핀이 옆으로 밀리기 때문이다.
+ * 크기는 변수 하나로 두고 터치 환경에서만 키운다(아래 `pointer: coarse` 참고).
  */
 .comment-pin-wrap {
+  --comment-pin-size: 26px;
   position: absolute;
   display: flex;
   align-items: center;
   gap: 4px;
-  transform: translate(-13px, -13px);
+  transform: translate(
+    calc(var(--comment-pin-size) / -2),
+    calc(var(--comment-pin-size) / -2)
+  );
   pointer-events: auto;
   white-space: nowrap;
 }
@@ -660,8 +665,8 @@ select {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: var(--comment-pin-size);
+  height: var(--comment-pin-size);
   padding: 0;
   border: 2px solid #fff;
   border-radius: 999px 999px 999px 2px;
@@ -828,6 +833,35 @@ select {
   box-shadow: var(--shadow);
 }
 
+/*
+ * 터치(굵은 포인터) 기기에서는 탭 타겟을 40px 이상으로 키운다 —
+ * 26px 핀·작은 버튼은 손가락으로 정확히 누르기 어렵다(m3-comments QA "낮음").
+ * 마우스 환경(pointer: fine)의 모양은 그대로 둔다.
+ */
+@media (pointer: coarse) {
+  .comment-pin-wrap {
+    --comment-pin-size: 40px;
+  }
+
+  .comment-pin {
+    font-size: 16px;
+    border-width: 3px;
+  }
+
+  .comment-pin-orphan {
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+
+  .comments-toolbar .button,
+  .comments-sidebar-head .button,
+  .comment-popover .button {
+    min-height: 40px;
+    min-width: 40px;
+    padding: 8px 12px;
+  }
+}
+
 .comments-sidebar {
   position: absolute;
   top: 0;
@@ -909,4 +943,140 @@ select {
 .comments-list-body {
   font-size: 13px;
   word-break: break-word;
+}
+
+/* ---- AI 검색 카드 (M4) --------------------------------------------------- */
+
+/* ✨ 버튼은 댓글 도구 모음 위에 같은 자리 규칙으로 얹는다. */
+.ai-toolbar {
+  position: absolute;
+  right: 60px;
+  bottom: 52px;
+  z-index: 8;
+  display: flex;
+  gap: 6px;
+}
+
+.ai-toolbar .button {
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.ai-sheet {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(360px, 100%);
+  padding: 12px;
+  overflow: auto;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+
+.ai-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-sheet-head h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.ai-sheet-head .button {
+  margin-left: auto;
+}
+
+.ai-ask-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ai-field textarea {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.ai-checkbox,
+.menu-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.menu-toggle {
+  padding: 9px 12px;
+  cursor: pointer;
+}
+
+.menu-note {
+  margin: 0;
+  padding: 0 12px 8px;
+  max-width: 260px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.ai-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  background: #fff9db;
+  border: 1px solid #e9b949;
+  border-radius: var(--radius);
+}
+
+.ai-preview h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.ai-preview ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ai-preview .ai-sources a {
+  color: #1971c2;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.ai-stats-days {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (pointer: coarse) {
+  .ai-toolbar .button,
+  .ai-sheet .button {
+    min-height: 40px;
+    min-width: 40px;
+    padding: 8px 12px;
+  }
 }

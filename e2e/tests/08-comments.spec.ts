@@ -285,3 +285,95 @@ test("남의 댓글은 삭제 버튼이 없고, 내 댓글은 지울 수 있다"
   await b.close();
   await a.close();
 });
+
+test("같은 자리에 겹친 핀도 하나씩 직접 클릭할 수 있다", async ({ browser, playwright }) => {
+  const { aliceId, bobId } = loadFixtures();
+  const api = await adminApi(playwright);
+  const { sessionId, pageId } = await createSessionWithPage(api, {
+    name: "겹친 핀",
+    memberIds: [aliceId, bobId],
+  });
+  await api.dispose();
+
+  const a = await openPage(browser, ALICE_STATE, `/s/${sessionId}/p/${pageId}`);
+  const b = await openPage(browser, BOB_STATE, `/s/${sessionId}/p/${pageId}`);
+
+  // 두 사람이 **같은 좌표**에 댓글을 남긴다 (API 로 직접 — UI 로는 먼저 생긴 핀이 클릭을 가져간다).
+  for (const [ctx, body] of [
+    [a.page, "겹침 A"],
+    [b.page, "겹침 B"],
+  ] as const) {
+    const created = await ctx.request.post(`/api/pages/${pageId}/comments`, {
+      data: { x: 100, y: 100, body },
+    });
+    expect(created.status(), await created.text()).toBe(201);
+  }
+
+  const pins = a.page.getByTestId("comment-pin");
+  await expect(pins).toHaveCount(2, { timeout: 20_000 });
+
+  // 생성 순서대로 가로로 펼쳐진다 — 두 핀의 상자가 겹치지 않는다.
+  await expect(pins.nth(0)).toHaveAttribute("data-cluster-index", "0");
+  await expect(pins.nth(1)).toHaveAttribute("data-cluster-index", "1");
+  await expect(pins.nth(1)).toHaveAttribute("data-cluster-size", "2");
+  const first = (await pins.nth(0).boundingBox())!;
+  const second = (await pins.nth(1).boundingBox())!;
+  expect(second.x).toBeGreaterThanOrEqual(first.x + first.width - 1);
+  expect(Math.round(second.y)).toBe(Math.round(first.y));
+
+  // 아래(먼저 생긴) 핀도 직접 눌러 스레드를 열 수 있다 — 예전에는 위 핀에 가려 클릭이 막혔다.
+  await pins.nth(0).click();
+  await expect(a.page.getByTestId("comment-body")).toHaveText("겹침 A");
+  await a.page.keyboard.press("Escape");
+  await expect(a.page.getByTestId("comment-body")).toHaveCount(0);
+
+  await pins.nth(1).click();
+  await expect(a.page.getByTestId("comment-body")).toHaveText("겹침 B");
+
+  await b.close();
+  await a.close();
+});
+
+test("터치 기기(pointer: coarse)에서는 핀·버튼 탭 타겟이 40px 이상이다", async ({
+  browser,
+  playwright,
+}) => {
+  const { aliceId } = loadFixtures();
+  const api = await adminApi(playwright);
+  const { sessionId, pageId } = await createSessionWithPage(api, {
+    name: "탭 타겟",
+    memberIds: [aliceId],
+  });
+  await api.dispose();
+
+  // `hasTouch` 를 켜면 Chromium 이 굵은 포인터로 보고한다 — CSS `@media (pointer: coarse)` 검증.
+  const context = await browser.newContext({
+    storageState: ALICE_STATE,
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+  });
+  const page = await context.newPage();
+
+  await page.goto(`/s/${sessionId}/p/${pageId}`);
+  await waitForExcalidraw(page);
+
+  const created = await page.request.post(`/api/pages/${pageId}/comments`, {
+    data: { x: 120, y: 120, body: "모바일 탭 타겟" },
+  });
+  expect(created.status()).toBe(201);
+  await expect(page.getByTestId("comment-pin")).toHaveCount(1, { timeout: 20_000 });
+  expect(await page.evaluate(() => matchMedia("(pointer: coarse)").matches)).toBe(true);
+
+  const boxOf = async (testId: string) => (await page.getByTestId(testId).boundingBox())!;
+  for (const testId of ["comment-pin", "comment-mode", "comments-sidebar-toggle"]) {
+    const box = await boxOf(testId);
+    expect(box.height, `${testId} 높이`).toBeGreaterThanOrEqual(40);
+    expect(box.width, `${testId} 너비`).toBeGreaterThanOrEqual(40);
+  }
+
+  // 커진 핀도 그대로 눌러서 열린다.
+  await page.getByTestId("comment-pin").click();
+  await expect(page.getByTestId("comment-body")).toHaveText("모바일 탭 타겟");
+
+  await context.close();
+});

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useAiState, useSetAiEnabled } from "../ai/aiSettings";
 import { useAuth } from "../auth/AuthContext";
 
 export function UserMenu() {
@@ -7,6 +8,8 @@ export function UserMenu() {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const { enabled: aiEnabled, available: aiAvailable, checked: aiChecked } = useAiState();
+  const setAiEnabled = useSetAiEnabled();
 
   useEffect(() => {
     if (!open) return;
@@ -41,6 +44,23 @@ export function UserMenu() {
           <button type="button" role="menuitem" onClick={() => navigate("/password")}>
             비밀번호 변경
           </button>
+          <label className="menu-toggle" data-testid="ai-toggle">
+            <input
+              type="checkbox"
+              checked={aiEnabled}
+              onChange={(event) => setAiEnabled(event.target.checked)}
+            />
+            AI 도우미 사용
+          </label>
+          <p className="menu-note">
+            질문은 서버를 거쳐 Google Gemini로 전송됩니다. API 키는 서버에만 있습니다.
+            {aiEnabled && aiChecked && !aiAvailable ? (
+              <span className="error" data-testid="ai-unavailable-note">
+                {" "}
+                이 서버에는 AI가 준비되어 있지 않습니다.
+              </span>
+            ) : null}
+          </p>
           <button
             type="button"
             role="menuitem"

@@ -159,4 +159,17 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE files_new RENAME TO files;
     `,
   },
+  {
+    version: 3,
+    name: "ai_calls_daily",
+    sql: `
+      -- AI 호출 일별 집계 (관리자 화면 표시용).
+      -- 분당 퓨즈는 프로세스 메모리에서 세고(재기동하면 사라져도 되는 값),
+      -- 여기에는 "하루에 몇 번 불렀나" 만 남긴다. 질문·답변은 저장하지 않는다.
+      CREATE TABLE ai_calls_daily (
+        day TEXT PRIMARY KEY,
+        count INTEGER NOT NULL DEFAULT 0
+      );
+    `,
+  },
 ];

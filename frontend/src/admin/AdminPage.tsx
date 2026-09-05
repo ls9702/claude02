@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
-import { api, ApiError, type AdminSession, type Role, type User } from "../api";
+import { api, ApiError, type AdminSession, type AiStats, type Role, type User } from "../api";
 import { Spinner } from "../components/Spinner";
 import { UserMenu } from "../components/UserMenu";
 
@@ -110,6 +110,7 @@ function UsersTab({
 
   return (
     <section>
+      <AiStatusCard />
       <form className="inline-form card" onSubmit={create} data-testid="create-user-form">
         <h2>사용자 추가</h2>
         <input
@@ -300,5 +301,49 @@ function SessionsTab({
         ))}
       </ul>
     </section>
+  );
+}
+
+/**
+ * AI 상태 카드 — 서버에 키가 있는지, 어떤 모델인지, 최근 며칠 몇 번 불렀는지.
+ * (질문·답변은 저장하지 않으므로 여기 있는 것은 **호출 수뿐**이다.)
+ */
+function AiStatusCard() {
+  const [stats, setStats] = useState<AiStats | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    api
+      .adminAiStats()
+      .then(setStats)
+      .catch(() => setFailed(true));
+  }, []);
+
+  if (failed) return null;
+  if (!stats) return null;
+
+  const recent = stats.daily.slice(0, 7);
+  return (
+    <div className="card" data-testid="ai-stats">
+      <h2>AI 도우미</h2>
+      <p className="small">
+        상태:{" "}
+        <strong data-testid="ai-stats-configured">
+          {stats.configured ? "사용 가능 (서버에 키 있음)" : "꺼짐 (GEMINI_API_KEY 없음)"}
+        </strong>{" "}
+        · 모델 {stats.model} · 분당 한도 {stats.rateLimitPerMin}회
+      </p>
+      {recent.length > 0 ? (
+        <ul className="ai-stats-days">
+          {recent.map((row) => (
+            <li key={row.day} data-testid="ai-stats-day">
+              {row.day} — {row.count}회
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted small">아직 호출 기록이 없습니다.</p>
+      )}
+    </div>
   );
 }

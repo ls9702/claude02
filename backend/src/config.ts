@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { DEFAULT_PING_INTERVAL_MS } from "./comments/heartbeat.js";
 
 export interface AppConfig {
   port: number;
@@ -16,9 +17,25 @@ export interface AppConfig {
   publicUrl: string;
   /** excalidraw-room 릴레이 주소 (`/socket.io` 프록시의 업스트림) */
   roomUrl: string;
+  /** 댓글 WebSocket ping 주기(ms). 테스트에서만 줄인다. */
+  commentWsPingMs: number;
+  /** Gemini API 키. **서버에만** 둔다 — 없으면 AI 기능 전체가 꺼진다. */
+  geminiApiKey: string | null;
+  /** 호출할 Gemini 모델 */
+  geminiModel: string;
+  /** Gemini 업스트림 주소. E2E 모킹 서버를 가리키게 바꿀 수 있다. */
+  geminiBaseUrl: string;
+  /** AI 호출 분당 퓨즈 (사용자 무관 전체 합) */
+  aiRateLimitPerMin: number;
   nodeEnv: "development" | "production" | "test";
   isProduction: boolean;
 }
+
+/** 양의 정수 환경변수 (비었거나 이상하면 기본값) */
+const toPositiveInt = (value: string | undefined, fallback: number): number => {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
 
 const toBool = (value: string | undefined, fallback: boolean): boolean => {
   if (value === undefined || value === "") return fallback;
@@ -57,6 +74,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     trustProxy: parseTrustProxy(env.TRUST_PROXY),
     publicUrl: env.PUBLIC_URL ?? "http://localhost:5173",
     roomUrl: env.ROOM_URL ?? "http://127.0.0.1:3002",
+    commentWsPingMs: toPositiveInt(env.COMMENT_WS_PING_MS, DEFAULT_PING_INTERVAL_MS),
+    geminiApiKey: env.GEMINI_API_KEY && env.GEMINI_API_KEY.trim() !== "" ? env.GEMINI_API_KEY.trim() : null,
+    geminiModel: env.GEMINI_MODEL?.trim() || DEFAULT_GEMINI_MODEL,
+    geminiBaseUrl: (env.GEMINI_BASE_URL?.trim() || DEFAULT_GEMINI_BASE_URL).replace(/\/+$/, ""),
+    aiRateLimitPerMin: toPositiveInt(env.AI_RATE_LIMIT_PER_MIN, DEFAULT_AI_RATE_LIMIT_PER_MIN),
     nodeEnv,
     isProduction: nodeEnv === "production",
   };
@@ -82,3 +104,21 @@ export const MAX_SNAPSHOTS_PER_PAGE = 20;
 export const SNAPSHOT_EVERY_N_SAVES = 20;
 /** 스냅샷 생성 주기 (경과 시간) */
 export const SNAPSHOT_MAX_AGE_MS = 5 * 60 * 1000;
+
+// ---- AI (M4) ------------------------------------------------------------
+/** 기본 모델 (`GEMINI_MODEL` 로 바꾼다) */
+export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
+/** 기본 업스트림 (`GEMINI_BASE_URL` 로 바꾼다 — E2E 모킹 서버용) */
+export const DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
+/** 분당 퓨즈 기본값 (쿼터가 아니라 폭주 방지용) */
+export const DEFAULT_AI_RATE_LIMIT_PER_MIN = 20;
+/** AI 요청 본문 상한 — 프롬프트는 글이지 업로드가 아니다 */
+export const MAX_AI_BODY_BYTES = 64 * 1024;
+/** 질문 길이 상한 */
+export const MAX_AI_PROMPT = 500;
+/** 선택 텍스트 컨텍스트 길이 상한 */
+export const MAX_AI_CONTEXT = 2000;
+/** 업스트림 응답을 기다리는 시간 (그라운딩 호출은 실제로 느리다) */
+export const AI_UPSTREAM_TIMEOUT_MS = 30_000;
+/** 업스트림 오류 본문을 클라이언트에 되풀이할 길이 */
+export const AI_DETAIL_CHARS = 400;
