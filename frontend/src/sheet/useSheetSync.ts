@@ -24,6 +24,11 @@ export interface SheetSyncHandlers {
   onSaved(version: number, by: string): void;
   /** (재)접속 완료 — 끊겼던 동안의 변경을 회수하려면 여기서 다시 읽는다. */
   onReady(info: { version: number; readOnly: boolean; reconnected: boolean }): void;
+  /**
+   * 세션 잠금이 바뀌어 서버가 `readOnly` 를 다시 알려 왔다.
+   * 소켓을 끊지 않고 밀어 주므로, 잠금 중에 열어 둔 시트도 **새로고침 없이** 편집이 돌아온다.
+   */
+  onReadOnly(readOnly: boolean): void;
 }
 
 export interface SheetSync {
@@ -74,6 +79,9 @@ export function useSheetSync(pageId: string, handlers: SheetSyncHandlers): Sheet
           if (Array.isArray(ops) && ops.length > 0) handlersRef.current.onOps(ops);
           break;
         }
+        case "readonly":
+          handlersRef.current.onReadOnly(Boolean(event.payload.readOnly));
+          break;
         case "saved":
           handlersRef.current.onSaved(
             Number(event.payload.version ?? 0),

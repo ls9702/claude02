@@ -53,6 +53,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       app.collabSockets.closeForUser(req.user.id);
       app.commentSockets.closeForUser(req.user.id);
       app.sheetSockets.closeForUser(req.user.id);
+      app.sessionSockets.closeForUser(req.user.id);
     }
     reply.clearCookie(SESSION_COOKIE, { path: "/" });
     return { ok: true };

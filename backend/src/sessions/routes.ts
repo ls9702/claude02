@@ -109,6 +109,11 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
 
     reply.code(201);
     const page = app.db.prepare<[string], PageRow>("SELECT * FROM pages WHERE id = ?").get(id)!;
+    // 같은 세션을 보고 있는 사람들의 탭 바에 새 페이지를 바로 띄운다.
+    app.sessionSockets.broadcast(session.id, {
+      type: "page.created",
+      payload: { sessionId: session.id, page: toPublicPage(page) },
+    });
     return { page: toPublicPage(page) };
   });
 
@@ -141,7 +146,12 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
       pageIds.forEach((id, index) => update.run(index, at, id));
     })();
 
-    return { pages: listPages(app, session.id).map(toPublicPage) };
+    const ordered = listPages(app, session.id).map(toPublicPage);
+    app.sessionSockets.broadcast(session.id, {
+      type: "pages.reordered",
+      payload: { sessionId: session.id, pages: ordered },
+    });
+    return { pages: ordered };
   });
 
   app.patch<{ Params: IdParams }>("/api/pages/:id", async (req) => {
@@ -153,6 +163,10 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
       .prepare("UPDATE pages SET name = ?, updated_at = ? WHERE id = ?")
       .run(name, nowIso(), page.id);
     const row = app.db.prepare<[string], PageRow>("SELECT * FROM pages WHERE id = ?").get(page.id)!;
+    app.sessionSockets.broadcast(session.id, {
+      type: "page.updated",
+      payload: { sessionId: session.id, page: toPublicPage(row) },
+    });
     return { page: toPublicPage(row) };
   });
 
@@ -164,6 +178,12 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
     const candidates = fileIdsForPages(app.db, [page.id]);
     app.db.prepare("DELETE FROM pages WHERE id = ?").run(page.id);
     await pruneOrphanFiles(app.db, app.config.dataDir, candidates);
+    // 이 페이지를 열어 둔 사람에게 알린다 — 안내 후 남은 페이지로 옮겨 간다.
+    // (댓글·시트 소켓은 페이지가 사라지면 다음 재접속에서 404 로 걸린다.)
+    app.sessionSockets.broadcast(session.id, {
+      type: "page.deleted",
+      payload: { sessionId: session.id, pageId: page.id },
+    });
     return { ok: true };
   });
 

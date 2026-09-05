@@ -20,6 +20,8 @@ import { ApiError, forbidden } from "./errors.js";
 import { fileRoutes } from "./files/routes.js";
 import { sceneRoutes } from "./scenes/routes.js";
 import { sessionRoutes } from "./sessions/routes.js";
+import { SessionSocketRegistry } from "./sessions/sockets.js";
+import { sessionWebsocket } from "./sessions/ws.js";
 import { sheetRoutes } from "./sheets/routes.js";
 import { SheetSocketRegistry } from "./sheets/sockets.js";
 import { sheetWebsocket } from "./sheets/ws.js";
@@ -75,6 +77,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   app.decorate("config", config);
   app.decorate("collabSockets", new CollabSocketRegistry());
   app.decorate("commentSockets", new CommentSocketRegistry());
+  app.decorate("sessionSockets", new SessionSocketRegistry());
   app.decorate("sheetSockets", new SheetSocketRegistry());
   app.addHook("onClose", async () => {
     db.close();
@@ -164,8 +167,9 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   await app.register(socketIoProxy);
   // socketIoProxy 다음에 등록한다 — upgrade 리스너 공존 처리는 commentWebsocket 안에 있다.
   await app.register(commentWebsocket);
-  // 시트 채널은 commentWebsocket 이 등록한 @fastify/websocket 위에 라우트만 얹는다.
+  // 시트·세션 채널은 commentWebsocket 이 등록한 @fastify/websocket 위에 라우트만 얹는다.
   await app.register(sheetWebsocket);
+  await app.register(sessionWebsocket);
 
   app.get("/api/health", async () => ({ ok: true }));
 

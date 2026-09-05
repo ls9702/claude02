@@ -407,6 +407,56 @@ describe("/ws/sheet/:pageId", () => {
     b.close();
   });
 
+  /**
+   * 회귀: 통합 디버깅 리포트 [높음] 2.
+   * `readOnly` 를 핸드셰이크 시점에 클로저로 고정하면, 이미 붙어 있던 소켓은
+   * 잠금 이후에도 계속 중계하고 잠금 해제 이후에도 계속 막힌다.
+   */
+  it("이미 붙어 있던 소켓도 잠금 변경을 곧바로 따른다", async () => {
+    const a = await subscribe(fx.ledgerPageId, fx.sidA);
+    const b = await subscribe(fx.ledgerPageId, fx.sidB);
+    expect((await a.waitFor("ready")).readOnly).toBe(false);
+    await b.waitFor("ready");
+
+    // 잠그면: 서버가 새 readOnly 를 알리고(소켓은 유지) 릴레이도 막는다.
+    await lockSession(fx.sessionId, true);
+    expect(await a.waitFor("readonly")).toMatchObject({ readOnly: true });
+    a.socket.send(
+      JSON.stringify({ type: "op", ops: [{ op: "replace", path: ["celldata"], value: 1 }] }),
+    );
+    expect((await a.waitFor("error")).code).toBe("session_locked");
+    expect(b.events.some((e) => e.type === "op")).toBe(false);
+
+    // 풀면: 새로고침(재접속) 없이 편집이 돌아온다.
+    a.events.length = 0;
+    b.events.length = 0;
+    await lockSession(fx.sessionId, false);
+    expect(await a.waitFor("readonly")).toMatchObject({ readOnly: false });
+    a.socket.send(
+      JSON.stringify({ type: "op", ops: [{ op: "replace", path: ["celldata"], value: 2 }] }),
+    );
+    const relayed = await b.waitFor("op");
+    expect(relayed.ops).toEqual([{ op: "replace", path: ["celldata"], value: 2 }]);
+    expect(a.events.some((e) => e.type === "error")).toBe(false);
+
+    a.close();
+    b.close();
+  });
+
+  it("잠금 중에도 관리자에게는 readOnly:false 를 알린다", async () => {
+    const admin = await subscribe(fx.ledgerPageId, adminSid);
+    const alice = await subscribe(fx.ledgerPageId, fx.sidA);
+    await admin.waitFor("ready");
+    await alice.waitFor("ready");
+
+    await lockSession(fx.sessionId, true);
+    expect(await admin.waitFor("readonly")).toMatchObject({ readOnly: false });
+    expect(await alice.waitFor("readonly")).toMatchObject({ readOnly: true });
+
+    admin.close();
+    alice.close();
+  });
+
   it("형태가 깨진 op 는 거부한다", async () => {
     const a = await subscribe(fx.ledgerPageId, fx.sidA);
     await a.waitFor("ready");

@@ -75,7 +75,7 @@ import {
 } from "./files";
 import { validateBroadcastPayload } from "./payload";
 import { Portal } from "./Portal";
-import type { CollabConnection } from "./status";
+import { saveErrorMessage, type CollabConnection } from "./status";
 import { SceneVersionCache, loadSceneFromServer, saveSceneToServer } from "./storage";
 import {
   getSyncableElements,
@@ -399,11 +399,8 @@ export class Collab extends PureComponent<CollabProps, CollabState> {
       // 페이지를 떠나며 취소된 요청은 알릴 대상이 없다 (이탈 시 flush 저장).
       if (this.unmounted) return;
       this.setSaveStatus("error");
-      if (error instanceof ApiError && error.status === 403) {
-        this.setErrorMessage("잠긴 세션이라 저장할 수 없습니다. (읽기 전용)");
-      } else {
-        this.setErrorMessage("변경 내용을 저장하지 못했습니다. 연결을 확인해 주세요.");
-      }
+      // 403(잠금)·404(페이지 삭제)·그 밖(연결 문제)을 구분한다 — `collab/status.ts`.
+      this.setErrorMessage(saveErrorMessage(error));
       console.error(error);
     } finally {
       this.saving = false;

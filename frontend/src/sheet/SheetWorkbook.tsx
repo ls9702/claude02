@@ -110,6 +110,31 @@ export default function SheetWorkbook({
     };
   }, [page.id]);
 
+  /**
+   * 잠금 해제의 **보조 경로**.
+   *
+   * 주 경로는 시트 소켓의 `readonly` 이벤트지만, 그 순간 소켓이 재접속 중이었다면 놓칠 수 있다.
+   * 세션 화면은 `session.updated` + 주기 폴링으로 `readOnly` prop 을 갱신하므로,
+   * "세션은 안 잠겼는데 서버가 읽기 전용이라고 했던" 상태가 남으면 서버에 한 번 더 물어 정리한다.
+   */
+  useEffect(() => {
+    if (readOnly || !serverReadOnly) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const result = await api.getSheet(page.id);
+        if (cancelled || !aliveRef.current) return;
+        if (result.version > versionRef.current) versionRef.current = result.version;
+        setServerReadOnly(result.readOnly);
+      } catch {
+        // 실패하면 다음 신호(소켓 readonly 이벤트)를 기다린다.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [readOnly, serverReadOnly, page.id]);
+
   // ---- 수식 계산 --------------------------------------------------------
   const recalculate = useCallback((options: { broadcast: boolean }) => {
     const workbook = workbookRef.current;
@@ -218,10 +243,20 @@ export default function SheetWorkbook({
     [],
   );
 
+  /**
+   * 세션 잠금이 바뀌었다 — 서버가 소켓을 끊지 않고 새 `readOnly` 를 밀어 준다.
+   * 예전에는 `ready` 시점 값만 썼기 때문에, 잠금 중에 열어 둔 시트는 관리자가 잠금을
+   * 풀어도 새로고침 전까지 읽기 전용에 갇혀 있었다 (디버깅 리포트 [높음] 2).
+   */
+  const handleReadOnly = useCallback((next: boolean) => {
+    setServerReadOnly(next);
+  }, []);
+
   const sync = useSheetSync(page.id, {
     onOps: handleRemoteOps,
     onSaved: handleSaved,
     onReady: handleReady,
+    onReadOnly: handleReadOnly,
   });
 
   const handleOp = useCallback(

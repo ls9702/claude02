@@ -92,6 +92,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       app.collabSockets.closeForUser(target.id);
       app.commentSockets.closeForUser(target.id);
       app.sheetSockets.closeForUser(target.id);
+      app.sessionSockets.closeForUser(target.id);
     }
 
     return { user: toPublicUser(findUserById(app.db, target.id)!) };
@@ -109,6 +110,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     app.collabSockets.closeForUser(target.id);
     app.commentSockets.closeForUser(target.id);
     app.sheetSockets.closeForUser(target.id);
+    app.sessionSockets.closeForUser(target.id);
     return { ok: true };
   });
 
@@ -171,15 +173,27 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       // 잠긴 세션은 릴레이를 쓰지 않는다 — 이 세션에 접근 가능한 사용자의 열린
       // 협업 소켓을 끊는다. 재접속하면 `/room` 이 `{locked:true}` 로 막는다.
       if (locked) {
-        const affected = userIdsWithSessionAccess(app.db, session.id);
-        app.collabSockets.closeForUsers(affected);
-        // 시트 채널도 끊는다 — 재접속하면 서버가 readOnly 로 알려 주고 편집이 막힌다.
-        app.sheetSockets.closeForUsers(affected);
+        app.collabSockets.closeForUsers(userIdsWithSessionAccess(app.db, session.id));
+      }
+      // 시트 채널은 **끊지 않고** 새 readOnly 를 알린다.
+      // 끊으면 잠글 때만 갱신되고 풀 때는 그대로라, 잠금 중에 열어 둔 시트가
+      // 새로고침 전까지 읽기 전용에 갇혔다(디버깅 리포트 [높음] 2).
+      // 서버의 릴레이 거부는 매 메시지마다 DB 를 다시 보므로(sheets/ws.ts) 이 알림과 무관하게 안전하다.
+      const isAdmin = new Set(
+        app.db.prepare<[], { id: string }>("SELECT id FROM users WHERE role = 'admin'").all().map((r) => r.id),
+      );
+      for (const pageId of pageIdsForSession(app.db, session.id)) {
+        app.sheetSockets.notifyReadOnly(pageId, (userId) => locked && !isAdmin.has(userId));
       }
     }
     const row = app.db
       .prepare<[string], SessionRow>("SELECT * FROM sessions WHERE id = ?")
       .get(session.id)!;
+    // 세션 이름·잠금 변경을 열려 있는 화면에 즉시 반영한다.
+    app.sessionSockets.broadcast(session.id, {
+      type: "session.updated",
+      payload: { session: toPublicSession(row) },
+    });
     return { session: toPublicSession(row) };
   });
 
@@ -190,6 +204,12 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     const result = app.db.prepare("DELETE FROM sessions WHERE id = ?").run(req.params.id);
     if (result.changes === 0) throw notFound("세션을 찾을 수 없습니다.");
     await pruneOrphanFiles(app.db, app.config.dataDir, candidates);
+    // 먼저 알리고(안내 후 목록으로 이동) 그다음 소켓을 끊는다 — send 프레임이 close 보다 앞선다.
+    app.sessionSockets.broadcast(req.params.id, {
+      type: "session.deleted",
+      payload: { sessionId: req.params.id },
+    });
+    app.sessionSockets.closeForSession(req.params.id);
     return { ok: true };
   });
 
@@ -218,6 +238,12 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     app.collabSockets.closeForUser(req.params.userId);
     app.commentSockets.closeForUser(req.params.userId);
     app.sheetSockets.closeForUser(req.params.userId);
+    // 세션 채널은 먼저 안내를 보내고(그 사용자만 목록으로 나간다) 그다음 끊는다.
+    app.sessionSockets.broadcast(req.params.id, {
+      type: "member.removed",
+      payload: { sessionId: req.params.id, userId: req.params.userId },
+    });
+    app.sessionSockets.closeForSessionUser(req.params.id, req.params.userId);
     return { ok: true };
   });
 }

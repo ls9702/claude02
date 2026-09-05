@@ -428,6 +428,26 @@ select {
   line-height: 1.4;
 }
 
+/*
+ * 세션 화면이 저절로 바뀐 이유를 알리는 띠
+ * (페이지 삭제 → 다른 페이지로 이동, 세션 삭제·멤버 해제 → 목록으로 이동).
+ */
+.session-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: #fff8e6;
+  border-bottom: 1px solid #f0dfae;
+  color: #7a5a10;
+  font-size: 13px;
+}
+
+.session-notice .icon-button {
+  margin-left: auto;
+  color: inherit;
+}
+
 .save-status {
   padding: 2px 10px;
   border-radius: 999px;

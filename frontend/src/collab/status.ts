@@ -3,6 +3,7 @@
  *
  * 배지·배너 문구를 한곳에 모아 두면 UI 컴포넌트를 띄우지 않고도 규칙을 테스트할 수 있다.
  */
+import { ApiError } from "../api";
 
 export type CollabConnection =
   /** 아직 룸에 붙기 전 (또는 룸을 쓰지 않는 상태) */
@@ -56,4 +57,19 @@ export function collabNotice(connection: CollabConnection): string | null {
     return "잠긴 세션이라 실시간 협업을 사용하지 않습니다. 최신 내용은 주기적으로 새로 고쳐집니다.";
   }
   return null;
+}
+
+/**
+ * 씬 저장(`PUT /api/pages/:id/scene`)이 실패했을 때의 배너 문구.
+ *
+ * 예전에는 403 만 따로 보고 나머지는 전부 "연결을 확인해 주세요" 였다. 그런데 관리자가
+ * 페이지를 지운 뒤에는 404 가 계속 나기 때문에, 접속자는 진짜 원인(페이지가 없어졌다)을
+ * 모른 채 "연결 문제" 라는 오탐만 반복해서 봤다 (통합 디버깅 리포트 [높음] 1).
+ */
+export function saveErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 403) return "잠긴 세션이라 저장할 수 없습니다. (읽기 전용)";
+    if (error.status === 404) return "이 페이지가 삭제되었습니다. 변경 내용은 저장되지 않습니다.";
+  }
+  return "변경 내용을 저장하지 못했습니다. 연결을 확인해 주세요.";
 }

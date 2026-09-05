@@ -1,5 +1,6 @@
 import type { CollabSocketRegistry } from "./collab/sockets.js";
 import type { CommentSocketRegistry } from "./comments/sockets.js";
+import type { SessionSocketRegistry } from "./sessions/sockets.js";
 import type { SheetSocketRegistry } from "./sheets/sockets.js";
 import type { AppConfig } from "./config.js";
 import type { Db } from "./db/index.js";
@@ -13,6 +14,8 @@ declare module "fastify" {
     collabSockets: CollabSocketRegistry;
     /** 열려 있는 댓글 소켓 — 페이지별 브로드캐스트·권한 회수용 (comments/sockets.ts) */
     commentSockets: CommentSocketRegistry;
+    /** 열려 있는 세션 이벤트 소켓 — 페이지·세션 변경 브로드캐스트용 (sessions/sockets.ts) */
+    sessionSockets: SessionSocketRegistry;
     /** 열려 있는 시트 소켓 — op 중계·접속자 표시·권한 회수용 (sheets/sockets.ts) */
     sheetSockets: SheetSocketRegistry;
   }

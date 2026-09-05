@@ -91,6 +91,34 @@ export class SheetSocketRegistry {
     return sent;
   }
 
+  /**
+   * 이 페이지 접속자들에게 각자의 `readOnly` 를 다시 알린다 (세션 잠금 변경).
+   *
+   * 잠금은 소켓이 살아 있는 동안에도 바뀌므로, 핸드셰이크 때 받은 `ready.readOnly`
+   * 만으로는 화면이 낡은 값에 갇힌다(잠금 해제 뒤에도 "읽기 전용"). 관리자 라우트가
+   * 잠금을 바꿀 때 이 메서드로 밀어 준다. 값은 사용자마다 다르다(관리자는 늘 편집 가능).
+   */
+  notifyReadOnly(pageId: string, readOnlyFor: (userId: string) => boolean): number {
+    const entries = this.byPage.get(pageId);
+    if (!entries) return 0;
+    let sent = 0;
+    for (const entry of entries) {
+      if (entry.socket.readyState !== OPEN) continue;
+      try {
+        entry.socket.send(
+          JSON.stringify({
+            type: "readonly",
+            payload: { readOnly: readOnlyFor(entry.userId) },
+          }),
+        );
+        sent += 1;
+      } catch {
+        // 끊기는 중인 소켓은 무시한다 — close 핸들러가 정리한다.
+      }
+    }
+    return sent;
+  }
+
   /** 현재 이 페이지를 보고 있는 사람들 (같은 사용자의 여러 탭은 하나로 센다) */
   members(pageId: string): Array<{ userId: string; username: string }> {
     const entries = this.byPage.get(pageId);
