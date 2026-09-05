@@ -22,6 +22,8 @@ export function SessionPage() {
   const [state, setState] = useState<LoadState | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [showNewPage, setShowNewPage] = useState(false);
+  /** 현재 캔버스 페이지(룸)에 접속한 사람 수 — 자기 자신 포함 */
+  const [collaboratorCount, setCollaboratorCount] = useState(0);
 
   const load = useCallback(async () => {
     if (!sessionId) return;
@@ -141,6 +143,11 @@ export function SessionPage() {
         ) : null}
 
         <div className="spacer" />
+        {collaboratorCount > 0 ? (
+          <span className="pill" data-testid="collab-count" title="이 페이지에 접속한 사람">
+            {`접속 ${collaboratorCount}명`}
+          </span>
+        ) : null}
         {readOnly ? <span className="pill" data-testid="readonly-pill">읽기 전용</span> : null}
         <UserMenu />
       </header>
@@ -153,7 +160,13 @@ export function SessionPage() {
             </p>
           </div>
         ) : activePage.type === "canvas" ? (
-          <CanvasPage key={activePage.id} page={activePage} readOnly={readOnly} />
+          <CanvasPage
+            key={activePage.id}
+            page={activePage}
+            readOnly={readOnly}
+            username={user?.username ?? "익명"}
+            onCollaboratorCount={setCollaboratorCount}
+          />
         ) : (
           <SheetPlaceholder key={activePage.id} page={activePage} />
         )}

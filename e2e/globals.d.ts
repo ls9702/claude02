@@ -16,6 +16,8 @@ interface ExcalidrawTestLib {
   convertToExcalidrawElements(skeleton: unknown[]): Array<Record<string, unknown>>;
   getSceneVersion(elements: readonly unknown[]): number;
   CaptureUpdateAction: Record<string, string>;
+  /** 요소를 바꾸면서 version/versionNonce 를 올린다 (협업 병합의 기준) */
+  newElementWith<T extends Record<string, unknown>>(element: T, updates: Record<string, unknown>): T;
 }
 
 interface Window {
@@ -23,4 +25,5 @@ interface Window {
   __excalidrawLib?: ExcalidrawTestLib;
   __flushScene?: () => Promise<void>;
   __saveStatus?: string;
+  __collaboratorCount?: number;
 }

@@ -5,6 +5,7 @@ import { defineConfig, devices } from "@playwright/test";
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
 const backendDir = resolve(repoRoot, "backend");
+const roomDir = resolve(repoRoot, "room");
 
 /** E2E 전용 임시 DATA_DIR — 매 실행마다 비운다. */
 const DATA_DIR = resolve(here, ".tmp/data");
@@ -61,6 +62,22 @@ export default defineConfig({
         ADMIN_PASSWORD: "admin1234",
         COOKIE_SECURE: "false",
         PUBLIC_URL: BASE_URL,
+        ROOM_URL: "http://127.0.0.1:3002",
+      },
+    },
+    {
+      // 실시간 협업 릴레이. 브라우저는 여기에 직접 붙지 않고 app 의 /socket.io 프록시를 거친다.
+      command: "node --import tsx src/index.ts",
+      cwd: roomDir,
+      url: "http://127.0.0.1:3002/",
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        NODE_ENV: "development",
+        PORT: "3002",
+        HOST: "127.0.0.1",
       },
     },
     {
@@ -71,7 +88,8 @@ export default defineConfig({
       timeout: 120_000,
       stdout: "pipe",
       stderr: "pipe",
-      env: { VITE_E2E: "1" },
+      // 저장되지 않은 변경이 있어도 이탈 확인 대화상자를 띄우지 않는다 (자동화 중 reload/close 를 막지 않게).
+      env: { VITE_E2E: "1", VITE_DISABLE_PREVENT_UNLOAD: "1" },
     },
   ],
 });

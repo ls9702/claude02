@@ -223,6 +223,12 @@ export const api = {
       rawBody: form,
     });
   },
+  /** 서버에 이미 저장된 fileId 만 골라 준다 (협업 중 재업로드 방지). */
+  filesExist: (pageId: string, ids: readonly string[]) =>
+    request<{ existing: string[] }>(`/api/pages/${pageId}/files/exists`, {
+      method: "POST",
+      body: { ids },
+    }),
 
   // 관리자
   adminListUsers: () => request<{ users: User[] }>("/api/admin/users"),

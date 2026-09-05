@@ -14,6 +14,8 @@ export interface AppConfig {
    */
   trustProxy: boolean | number | string;
   publicUrl: string;
+  /** excalidraw-room 릴레이 주소 (`/socket.io` 프록시의 업스트림) */
+  roomUrl: string;
   nodeEnv: "development" | "production" | "test";
   isProduction: boolean;
 }
@@ -54,6 +56,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     cookieSecure: toBool(env.COOKIE_SECURE, false),
     trustProxy: parseTrustProxy(env.TRUST_PROXY),
     publicUrl: env.PUBLIC_URL ?? "http://localhost:5173",
+    roomUrl: env.ROOM_URL ?? "http://127.0.0.1:3002",
     nodeEnv,
     isProduction: nodeEnv === "production",
   };

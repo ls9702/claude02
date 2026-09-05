@@ -8,6 +8,7 @@ import { adminRoutes } from "./admin/routes.js";
 import authPlugin from "./auth/plugin.js";
 import { authRoutes } from "./auth/routes.js";
 import { bootstrapAdmin, purgeExpiredSessions } from "./auth/service.js";
+import { socketIoProxy, SOCKET_IO_PREFIX } from "./collab/proxy.js";
 import { loadConfig, MAX_FILE_BYTES, MAX_THUMBNAIL_BYTES, type AppConfig } from "./config.js";
 import { openDatabase } from "./db/index.js";
 import { ApiError, forbidden } from "./errors.js";
@@ -21,7 +22,7 @@ export interface BuildServerOptions {
 }
 
 /** SPA fallback 에서 제외할 경로 접두사 */
-const API_PREFIXES = ["/api", "/files", "/ws"];
+const API_PREFIXES = ["/api", "/files", "/ws", SOCKET_IO_PREFIX];
 
 /** must_change_password=1 인 사용자에게도 허용하는 경로 */
 const PASSWORD_CHANGE_ALLOWED = new Set(["/api/auth/me", "/api/auth/password", "/api/auth/logout"]);
@@ -29,10 +30,17 @@ const PASSWORD_CHANGE_ALLOWED = new Set(["/api/auth/me", "/api/auth/password", "
 /** 쿼리스트링을 뗀 경로 */
 const pathOf = (url: string): string => url.split("?")[0] ?? url;
 
-/** 강제 비밀번호 변경 가드가 적용되는 경로인지 (`/api/*`, `/files/*`) */
+/** 강제 비밀번호 변경 가드가 적용되는 경로인지 (`/api/*`, `/files/*`, `/socket.io/*`) */
 function isGuardedPath(url: string): boolean {
   const path = pathOf(url);
-  return path === "/api" || path.startsWith("/api/") || path === "/files" || path.startsWith("/files/");
+  return (
+    path === "/api" ||
+    path.startsWith("/api/") ||
+    path === "/files" ||
+    path.startsWith("/files/") ||
+    path === SOCKET_IO_PREFIX ||
+    path.startsWith(`${SOCKET_IO_PREFIX}/`)
+  );
 }
 
 export async function buildServer(options: BuildServerOptions = {}): Promise<FastifyInstance> {
@@ -131,6 +139,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   await app.register(sessionRoutes);
   await app.register(sceneRoutes);
   await app.register(fileRoutes);
+  await app.register(socketIoProxy);
 
   app.get("/api/health", async () => ({ ok: true }));
 

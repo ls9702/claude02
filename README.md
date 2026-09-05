@@ -3,14 +3,14 @@
 Excalidraw 를 임베드한 자체 호스팅 화이트보드. 관리자가 계정과 세션(보드)을 만들고 사용자를 할당하면,
 사용자는 자신에게 할당된 세션의 페이지(그림판 / 시트)를 열어 함께 작업한다.
 
-전체 스펙은 [`PLAN.md`](./PLAN.md) 참고. 현재 구현 단계는 **M1 — 뼈대(인증·세션·페이지·파일·캔버스 저장)**.
+전체 스펙은 [`PLAN.md`](./PLAN.md) 참고. 현재 구현 단계는 **M2 — 실시간 협업(excalidraw-room 릴레이 + 협업 클라이언트 포팅)**.
 
 ## 저장소 구조
 
 ```
 backend/    Fastify 5 + better-sqlite3 (ESM TypeScript, dev 는 tsx / 빌드는 tsc)
 frontend/   Vite 8 + React 19 + @excalidraw/excalidraw 0.18.1
-room/       excalidraw-room 릴레이 (M2에서 채움)
+room/       excalidraw-room 릴레이 (업스트림 벤더링, MIT — `room/LICENSE`)
 e2e/        Playwright 시나리오 테스트
 ```
 
@@ -19,24 +19,25 @@ e2e/        Playwright 시나리오 테스트
 ```bash
 npm install                 # 워크스페이스 설치 + Excalidraw 폰트 자체 호스팅 복사
 cp .env.example .env        # ADMIN_PASSWORD 를 반드시 채운다
-npm run dev                 # backend(3001) + frontend(5173) 동시 실행
+npm run dev                 # backend(3001) + room(3002) + frontend(5173) 동시 실행
 ```
 
 브라우저에서 <http://localhost:5173> 접속 → `ADMIN_USERNAME`/`ADMIN_PASSWORD` 로 로그인 →
 비밀번호 변경 화면(최초 1회 강제) → 관리자 화면에서 사용자·세션 생성.
 
-Vite dev 서버는 `/api`, `/files`, `/ws`(WebSocket 포함)를 백엔드(3001)로 프록시한다.
+Vite dev 서버는 `/api`, `/files`, `/ws`, `/socket.io`(WebSocket 포함)를 백엔드(3001)로 프록시한다.
+백엔드는 다시 `/socket.io` 를 room(3002)으로 프록시한다 — 브라우저는 릴레이에 직접 붙지 않는다.
 
 ## 스크립트
 
 | 명령 | 설명 |
 |---|---|
-| `npm run dev` | backend + frontend 동시 실행 |
-| `npm run build` | backend(tsc) → `backend/dist`, frontend(vite) → `frontend/dist` |
+| `npm run dev` | backend + room + frontend 동시 실행 |
+| `npm run build` | backend·room(tsc) → `*/dist`, frontend(vite) → `frontend/dist` |
 | `npm start` | 빌드된 백엔드 실행 (프로덕션에서 `frontend/dist` 도 서빙) |
 | `npm run typecheck` | 모든 워크스페이스 `tsc --noEmit` |
 | `npm test` | backend / frontend vitest |
-| `npm run e2e` | Playwright E2E (백엔드·프론트를 임시 DATA_DIR 로 자동 기동) |
+| `npm run e2e` | Playwright E2E (백엔드·room·프론트를 임시 DATA_DIR 로 자동 기동) |
 
 ## 환경변수
 
@@ -52,6 +53,7 @@ Vite dev 서버는 `/api`, `/files`, `/ws`(WebSocket 포함)를 백엔드(3001)�
 | `COOKIE_SECURE` | `false` | HTTPS 배포 시 `true` (세션 쿠키 `Secure`) |
 | `TRUST_PROXY` | `false` | `X-Forwarded-For` 신뢰 여부. 기본값에서는 헤더를 무시하고 실제 소켓 주소를 `req.ip` 로 쓴다. **DSM 리버스 프록시 뒤에서는 `TRUST_PROXY=1`** (1홉 신뢰). 홉 수(`2`)나 신뢰할 IP/CIDR 목록(`127.0.0.1,10.0.0.0/8`)도 지정할 수 있다 |
 | `PUBLIC_URL` | `http://localhost:5173` | 프론트 공개 주소 |
+| `ROOM_URL` | `http://127.0.0.1:3002` | excalidraw-room 주소 (`/socket.io` 프록시 업스트림) |
 | `FRONTEND_DIST` | `../frontend/dist` | 프로덕션 정적 파일 경로 (backend cwd 기준) |
 | `NODE_ENV` | `development` | `production` 이면 정적 서빙 + SPA fallback 활성화 |
 
@@ -78,7 +80,7 @@ POST   /api/sessions/:id/pages          {name, type:'canvas'|'sheet'}
 PUT    /api/sessions/:id/pages/order    {pageIds:[...]}
 PATCH  /api/pages/:id                   {name}
 DELETE /api/pages/:id
-GET    /api/pages/:id/room              → {roomId, roomKey}   (M2 협업용)
+GET    /api/pages/:id/room              → {roomId, roomKey}   (세션 멤버에게만)
 
 GET    /api/pages/:id/scene             → {elements, appState, version}
 PUT    /api/pages/:id/scene             {elements, appState} → 서버 병합 결과
@@ -86,7 +88,10 @@ GET    /api/pages/:id/snapshots         POST /api/pages/:id/snapshots/:snapId/re
 PUT    /api/pages/:id/thumbnail         (image/png, ≤200KB)   GET /api/pages/:id/thumbnail
 
 POST   /api/pages/:id/files             (multipart: fileId, mime, file — 파일당 ≤5MB)
+POST   /api/pages/:id/files/exists      {ids:[...]} → {existing:[...]}   (협업 중 재업로드 방지)
 GET    /files/:fileId                   → 이미지 바이너리 (페이지 접근 권한 필요)
+
+ANY    /socket.io/*                     → room 릴레이 프록시 (로그인 필수, 폴링·WS 업그레이드 모두)
 ```
 
 ### 씬 병합 규칙
@@ -117,6 +122,33 @@ GET    /files/:fileId                   → 이미지 바이너리 (페이지 �
 페이지·세션을 삭제하면 링크가 사라지고, **링크가 0개가 된 파일만** DB 행과 디스크 파일이 함께 삭제된다
 (씬에서 이미지 요소만 지운 경우에는 스냅샷 복원을 위해 링크를 끊지 않는다).
 
+## 실시간 협업 (M2)
+
+캔버스 페이지를 열면 자동으로 그 페이지의 룸에 참여하고, 페이지를 떠나면 자동으로 나간다.
+시작/중지 버튼은 없다.
+
+```
+[브라우저 A] ─┐                     ┌─ /api, /files  → Fastify 라우트
+              ├─ 같은 오리진(app) ──┤
+[브라우저 B] ─┘                     └─ /socket.io    → @fastify/http-proxy → room(3002)
+```
+
+- **릴레이**: `room/` 은 업스트림 excalidraw-room 을 그대로 벤더링한 무상태 서버다
+  (이벤트 이름·volatile 브로드캐스트·follow 룸 규칙 동일).
+- **협업 클라이언트**: `frontend/src/collab/` 은 excalidraw.com 앱(`excalidraw-app/collab/`, MIT)을 포팅한 것이다.
+  Firebase 저장/파일/링크 부분만 우리 API 로 갈아끼웠고, 프로토콜·타이밍 상수(`SYNC_FULL_SCENE_INTERVAL_MS`,
+  `CURSOR_SYNC_TIMEOUT`, `INITIAL_SCENE_UPDATE_TIMEOUT`, `IDLE_THRESHOLD` …)는 업스트림 값을 유지한다.
+- **룸 키**: URL 에 넣지 않는다. `GET /api/pages/:id/room` 이 세션 멤버에게만 내려주고,
+  릴레이로 오가는 페이로드는 그 키로 AES-GCM 암호화한다 (`frontend/src/collab/encryption.ts`).
+- **인증**: `/socket.io` 프록시는 HTTP 폴링과 WebSocket 업그레이드 **양쪽 모두** 세션 쿠키를 요구한다.
+  `@fastify/http-proxy` 가 업그레이드 요청도 Fastify 라우터로 흘려보내므로 라우트 preHandler(`requireAuth`)가 그대로 돈다.
+- **저장 경로는 하나다**: 모든 저장은 `Collab.saveScene()` 을 지난다. 편집이 멈추면 1.5초 디바운스로,
+  편집이 계속되면 업스트림과 같은 20초 주기 스로틀로 저장하며, 탭을 숨기거나 페이지를 떠날 때 flush 한다.
+- **이미지**: 새 이미지는 장변 2048px 로 줄여 `POST /api/pages/:id/files` 로 올린 뒤 요소 상태가 `saved` 로 바뀌고,
+  그 브로드캐스트를 받은 상대가 `GET /files/:id` 로 내려받는다.
+- **접속자**: Excalidraw 기본 아바타/커서 UI 를 쓰고, 상단 탭 바에 "접속 N명" 을 표시한다.
+  발표자 따라가기는 Excalidraw 내장 `onUserFollow` 에 연결되어 있다.
+
 ## Excalidraw 폰트 자체 호스팅
 
 `@excalidraw/excalidraw` 는 기본적으로 폰트를 외부 CDN 에서 받는다. 외부 의존을 없애기 위해
@@ -129,9 +161,9 @@ GET    /files/:fileId                   → 이미지 바이너리 (페이지 �
 
 ```bash
 npm run typecheck   # backend / frontend / e2e
-npm test            # vitest (backend 87개 + frontend 18개)
+npm test            # vitest (backend + frontend)
 npm run e2e         # Playwright 시나리오
 ```
 
-E2E 는 `e2e/.tmp/data` 를 비우고 백엔드(`ADMIN_PASSWORD=admin1234`)와 Vite dev 서버(`VITE_E2E=1`)를 직접 띄운다.
+E2E 는 `e2e/.tmp/data` 를 비우고 백엔드(`ADMIN_PASSWORD=admin1234`)·room(3002)·Vite dev 서버(`VITE_E2E=1`)를 직접 띄운다.
 Chromium 은 `PLAYWRIGHT_BROWSERS_PATH` 에 미리 설치된 것을 사용한다.

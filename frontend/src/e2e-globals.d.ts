@@ -1,4 +1,9 @@
-import type { CaptureUpdateAction, convertToExcalidrawElements, getSceneVersion } from "@excalidraw/excalidraw";
+import type {
+  CaptureUpdateAction,
+  convertToExcalidrawElements,
+  getSceneVersion,
+  newElementWith,
+} from "@excalidraw/excalidraw";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 
 declare global {
@@ -9,9 +14,12 @@ declare global {
       convertToExcalidrawElements: typeof convertToExcalidrawElements;
       getSceneVersion: typeof getSceneVersion;
       CaptureUpdateAction: typeof CaptureUpdateAction;
+      newElementWith: typeof newElementWith;
     };
     __flushScene?: () => Promise<void>;
     __saveStatus?: string;
+    /** 현재 페이지(룸) 접속자 수 — 자기 자신 포함 */
+    __collaboratorCount?: number;
   }
 }
 

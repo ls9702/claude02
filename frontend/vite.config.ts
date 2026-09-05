@@ -18,6 +18,9 @@ export default defineConfig({
       "/api": { target: BACKEND, changeOrigin: false },
       "/files": { target: BACKEND, changeOrigin: false },
       "/ws": { target: BACKEND, changeOrigin: false, ws: true },
+      // 협업 릴레이는 항상 app(백엔드)을 거친다 — 프로덕션 경로와 같게 유지한다.
+      // app 이 다시 room(3002)으로 프록시하며, 그 경계에서 쿠키 인증을 검사한다.
+      "/socket.io": { target: BACKEND, changeOrigin: false, ws: true },
     },
   },
   build: {

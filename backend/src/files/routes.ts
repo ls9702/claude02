@@ -8,6 +8,7 @@ import { MAX_FILE_BYTES } from "../config.js";
 import { badRequest, forbidden, notFound, payloadTooLarge } from "../errors.js";
 import { nowIso } from "../ids.js";
 import type { FileRow } from "../types.js";
+import { asObject } from "../validate.js";
 import { canAccessFile, filePathFor } from "./storage.js";
 
 interface IdParams {
@@ -19,6 +20,9 @@ interface FileParams {
 
 /** Excalidraw fileId 는 해시 문자열이다. 경로 조작을 막기 위해 엄격히 검사한다. */
 const FILE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** `files/exists` 한 번에 확인할 수 있는 최대 id 수 */
+const MAX_EXISTS_IDS = 500;
 
 const ALLOWED_MIME = new Set([
   "image/png",
@@ -97,6 +101,28 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
 
     reply.code(201);
     return { id: fileId, deduplicated: false };
+  });
+
+  /**
+   * 협업 중 FileManager 가 "이 파일들은 이미 서버에 있나?" 를 묻는 엔드포인트.
+   * 이미 있는 파일은 다시 올리지 않는다.
+   */
+  app.post<{ Params: IdParams }>("/api/pages/:id/files/exists", async (req) => {
+    requirePageAccess(app.db, req.user!, req.params.id);
+
+    const body = asObject(req.body);
+    const raw = body.ids;
+    if (!Array.isArray(raw)) throw badRequest("ids 는 배열이어야 합니다.");
+    if (raw.length > MAX_EXISTS_IDS) throw badRequest("한 번에 확인할 수 있는 파일 수를 넘었습니다.");
+
+    const ids = raw.filter((id): id is string => typeof id === "string" && FILE_ID_RE.test(id));
+    if (ids.length === 0) return { existing: [] };
+
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = app.db
+      .prepare<string[], { id: string }>(`SELECT id FROM files WHERE id IN (${placeholders})`)
+      .all(...ids);
+    return { existing: rows.map((r) => r.id) };
   });
 
   app.get<{ Params: FileParams }>("/files/:fileId", async (req, reply) => {

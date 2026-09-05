@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",
+    "@fastify/http-proxy": "11.6.2",
     "@fastify/multipart": "10.1.1",
     "@fastify/rate-limit": "11.2.0",
     "@fastify/static": "10.1.3",

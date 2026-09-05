@@ -10,8 +10,8 @@
     "e2e"
   ],
   "scripts": {
-    "dev": "concurrently -n backend,frontend -c blue,green \"npm run dev -w backend\" \"npm run dev -w frontend\"",
-    "build": "npm run build -w backend && npm run build -w frontend",
+    "dev": "concurrently -n backend,room,frontend -c blue,magenta,green \"npm run dev -w backend\" \"npm run dev -w room\" \"npm run dev -w frontend\"",
+    "build": "npm run build -w backend && npm run build -w room && npm run build -w frontend",
     "start": "npm run start -w backend",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
