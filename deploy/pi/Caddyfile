@@ -1,0 +1,123 @@
+# Caddy v2 설정 — 라즈베리파이4 배포 (deploy/pi).
+#
+# 이 파일이 DSM 리버스 프록시(NAS 배포)의 자리를 대신한다. 하는 일은 셋이다.
+#   1) TLS 종단 — 도메인으로 서비스하면 Let's Encrypt 인증서를 자동 발급·갱신한다
+#   2) WebSocket 통과 — Caddy 의 reverse_proxy 는 Upgrade 요청을 **설정 없이** 그대로 넘긴다
+#      (nginx 처럼 proxy_set_header Upgrade/Connection 을 적어 줄 필요가 없다)
+#   3) X-Forwarded-For / X-Forwarded-Proto 부착 — app 의 TRUST_PROXY 가 이 값을 읽는다
+#
+# 고친 뒤에는 적용이 필요하다:
+#   docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile   (무중단)
+#   docker compose restart caddy                                          (간단, 1~2초 끊김)
+# 문법만 먼저 확인하려면:
+#   docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile
+{
+	# Let's Encrypt 만료 알림을 받을 주소. **자기 메일로 바꿀 것** (.env 의 CADDY_EMAIL).
+	email {$CADDY_EMAIL:admin@863ad.co.kr}
+
+	servers {
+		# 사설 대역(도커 네트워크·홈 LAN)에서 온 요청은 신뢰하는 프록시로 본다.
+		# B안(Cloudflare Tunnel)에서 cloudflared 가 붙여 보낸 X-Forwarded-For/Proto 를
+		# Caddy 가 덮어쓰지 않고 이어 붙이게 하려면 이 설정이 필요하다.
+		# A안에서는 브라우저가 공인 IP 로 직접 들어오므로 신뢰 대상이 아니고,
+		# Caddy 가 X-Forwarded-* 를 새로 만든다(클라이언트가 위조해 보내도 무시된다).
+		trusted_proxies static private_ranges
+	}
+
+	# admin API(2019)는 컨테이너 내부 localhost 에만 열린다 — 호스트로 나오지 않는다.
+	# 그래서 끄지 않는다. 위의 `caddy reload` 가 이 API 를 쓴다.
+}
+
+# ---------------------------------------------------------------------------
+# 화이트보드 — A안이면 도메인, B안이면 :80
+#
+#   A안(.env: SITE_ADDRESS=draw.863ad.co.kr)
+#     Caddy 가 443 을 직접 받는다. 인증서 자동 발급, 80 → 443 리다이렉트 자동.
+#     공유기1 의 80/443 포워딩을 NAS 대신 Pi 로 돌려야 한다.
+#
+#   B안(.env: SITE_ADDRESS=:80)
+#     cloudflared 가 TLS 를 종단하고 caddy:80 으로 평문 HTTP 를 보낸다.
+#     Caddy 는 인증서를 발급하지 않는다(도메인이 아니라 포트만 적혀 있으므로).
+#     공유기·NAS 는 손대지 않는다.
+# ---------------------------------------------------------------------------
+{$SITE_ADDRESS:draw.863ad.co.kr} {
+	# 응답 압축. 프론트 정적 파일은 빌드 때 이미 .br/.gz 를 만들어 두었고
+	# app 이 그것을 그대로 내려보내므로(Content-Encoding 이 이미 붙어 있다) 여기서
+	# 두 번 압축되지 않는다. 실제로 압축되는 것은 JSON API 응답이다.
+	encode zstd gzip
+
+	# 업로드 이미지는 5MB 로 백엔드에서 이미 제한한다. Caddy 쪽 본문 상한은 그보다
+	# 넉넉히 둔다(멀티파트 오버헤드 포함). 필요 없으면 이 줄을 지워도 된다.
+	request_body {
+		max_size 12MB
+	}
+
+	# app 하나가 SPA·API·WebSocket(/socket.io, /ws)을 모두 서빙한다.
+	# WebSocket 은 자동으로 통과하므로 별도 블록이 필요 없다.
+	reverse_proxy app:3001 {
+		# 협업·댓글 소켓은 오래 열려 있다. Caddy 는 기본적으로 프록시 응답에
+		# 읽기 타임아웃을 걸지 않지만, 명시해 두면 나중에 헷갈리지 않는다.
+		transport http {
+			# 업스트림 연결 타임아웃(핸드셰이크). 응답·스트리밍에는 상한을 두지 않는다.
+			dial_timeout 10s
+		}
+	}
+
+	log {
+		output stdout
+		format console
+		# 헬스체크 로그가 시끄러우면 아래를 켠다.
+		# level ERROR
+	}
+
+	# HSTS — A안에서 HTTPS 로 굳힌 뒤에만 켠다.
+	# 한 번 켜면 브라우저가 max-age 동안 HTTP 접속을 거부하므로, 되돌리기가 어렵다.
+	# header Strict-Transport-Security "max-age=31536000"
+}
+
+# ===========================================================================
+# A안 전용 — NAS 호스트명을 NAS 로 되돌려 준다
+# ===========================================================================
+#
+# 공유기1 의 80/443 포워딩을 Pi 로 옮기면, 그동안 NAS 가 받던 호스트명들도 Pi 로
+# 들어온다. 아래 블록으로 그 요청을 NAS 에 그대로 넘긴다. Caddy 가 모든 호스트명의
+# 인증서를 대신 발급·갱신하므로, NAS 가 80 포트를 잃어 Let's Encrypt 갱신에 실패하는
+# 문제는 생기지 않는다(NAS 인증서는 더 이상 외부에 쓰이지 않는다).
+#
+# **전환 전에 할 일**: 공유기1 의 포트포워딩 목록과 DSM 의 「제어판 → 로그인 포털 →
+# 고급 → 리버스 프록시」 목록을 보고, 외부에서 쓰는 호스트명을 하나도 빠뜨리지 말고
+# 아래에 옮겨 적는다. 빠뜨린 호스트명은 외부에서 접속되지 않는다.
+# 되돌리기는 공유기 포워딩을 NAS 로 되돌리는 것 하나면 된다.
+#
+# NAS 의 IP 는 .env 의 NAS_IP 로 넣거나 아래에 직접 적는다.
+#
+# ── 1) NAS 가 평문 80 으로 받는 경우 (DSM 리버스 프록시가 HTTP 로 서비스) ──────
+#
+# travel.863ad.co.kr {
+# 	encode zstd gzip
+# 	reverse_proxy http://{$NAS_IP}:80
+# }
+#
+# ── 2) NAS 가 HTTPS(5001 등)로만 받는 경우 ────────────────────────────────────
+#    DSM 이 "HTTP → HTTPS 자동 리다이렉트"를 켜 두었으면 이쪽을 쓴다.
+#    NAS 의 인증서는 이제 갱신되지 않아 만료되거나 자체 서명일 수 있으므로
+#    내부 구간의 인증서 검증은 생략한다(집 LAN 안이라 위험이 낮다).
+#
+# dsm.863ad.co.kr {
+# 	reverse_proxy https://{$NAS_IP}:5001 {
+# 		transport http {
+# 			tls
+# 			tls_insecure_skip_verify
+# 		}
+# 	}
+# }
+#
+# ── 3) 호스트명이 여러 개면 한 줄로 묶을 수 있다 ─────────────────────────────
+#
+# photo.863ad.co.kr, note.863ad.co.kr {
+# 	encode zstd gzip
+# 	reverse_proxy http://{$NAS_IP}:80
+# }
+#
+# 주의: 5000/5001 같은 **포트로 직접 접속하는 경로**(https://집공인IP:5001)는 이 파일과
+# 무관하다. 그 포워딩은 그대로 NAS 를 가리키고 있으면 된다 — 바꾸는 것은 80/443 뿐이다.

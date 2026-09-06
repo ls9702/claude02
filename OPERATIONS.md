@@ -1,7 +1,15 @@
 # OPERATIONS — 운영 안내서
 
-배포가 끝난 뒤(→ `SETUP.md`) 일상적으로 하는 일을 모았다.
+배포가 끝난 뒤 일상적으로 하는 일을 모았다.
 관리자 화면은 로그인 후 우측 상단 사용자 메뉴 → **관리** 에서 들어간다(`/admin`).
+
+배포 대상이 둘이라 **백업(3장)·업데이트(4장)·로그(5장)** 에는 분기가 있다.
+1·2·6·7장은 두 대상이 같다.
+
+| 대상 | 배포 가이드 | 컨테이너 조작 | 리버스 프록시 |
+|---|---|---|---|
+| **라즈베리파이4 (주)** | [deploy/pi/SETUP-PI.md](./deploy/pi/SETUP-PI.md) | `cd ~/whiteboard/deploy/pi && docker compose ...` | Caddy 컨테이너 |
+| DS118 NAS (대안) | [SETUP.md](./SETUP.md) | Container Manager GUI | DSM 리버스 프록시 |
 
 - [1. 계정](#1-계정)
 - [2. 세션과 페이지](#2-세션과-페이지)
@@ -104,7 +112,31 @@ WAL 모드에서 `app.db`/`app.db-wal`/`app.db-shm` 를 그냥 복사하면 복�
 
 지금 남아 있는 백업 목록은 `GET /api/admin/backup` 으로 볼 수 있다.
 
-### 3-2. DSM 작업 스케줄러로 자동화
+### 3-2a. 라즈베리파이4 — `backup-to-nas.sh` + systemd 타이머
+
+Pi 는 `deploy/pi/backup-to-nas.sh` 가 이 일을 한다:
+로그인 → `POST /api/admin/backup` → 방금 만들어진 DB 스냅샷과 `data/files/` 를
+NAS 로 rsync(ssh) 하거나 마운트된 경로로 복사 → NAS 쪽 스냅샷을 `NAS_KEEP` 개만 남김.
+
+설정은 `deploy/pi/.env` 의 「3. NAS 백업」 절에 있고, 설치 절차는
+[SETUP-PI.md 9단계](./deploy/pi/SETUP-PI.md#9-nas-로-백업-매일-0300) 에 있다.
+
+```bash
+cd ~/whiteboard/deploy/pi
+
+./backup-to-nas.sh --dry-run          # 무엇을 보낼지만 확인
+./backup-to-nas.sh                    # 지금 한 번 백업
+
+systemctl list-timers whiteboard-backup.timer      # 다음 실행 시각 (매일 03:00)
+sudo systemctl start whiteboard-backup.service     # 타이머와 무관하게 지금 실행
+journalctl -u whiteboard-backup -n 50 --no-pager   # 결과·실패 원인
+```
+
+> `BACKUP_ADMIN_PASSWORD` 는 **최초 비밀번호 변경 이후의 실제 비밀번호**여야 한다.
+> 관리자 비밀번호를 바꿨으면 `.env` 도 같이 고친다 — 안 그러면 다음 날 백업이 조용히 실패한다
+> (`journalctl` 에는 남는다).
+
+### 3-2b. DS118 NAS — DSM 작업 스케줄러로 자동화
 
 **제어판 → 작업 스케줄러 → 생성 → 예약된 작업 → 사용자 정의 스크립트**
 
@@ -146,8 +178,12 @@ rm -f "$JAR"
 
 ### 3-3. 복원
 
-1. **Container Manager → 프로젝트 → whiteboard → 중지**
-2. File Station 또는 SSH 로 파일을 되돌린다:
+1. 앱을 멈춘다.
+   - **Pi**: `cd ~/whiteboard/deploy/pi && docker compose stop app room`
+   - **NAS**: Container Manager → 프로젝트 → whiteboard → 중지
+2. 데이터 디렉터리에서 파일을 되돌린다
+   (Pi 는 `deploy/pi/data`, NAS 는 `/volume1/docker/whiteboard/data`.
+   Pi 에서 NAS 백업본을 되가져올 때는 먼저 `scp`/`rsync` 로 그 파일을 Pi 에 내려받는다):
 
 ```bash
 cd /volume1/docker/whiteboard/data
@@ -161,7 +197,9 @@ rsync -a --delete /volume1/backup/whiteboard/files/ ./files/
 chown -R 1000:1000 files
 ```
 
-3. **프로젝트 → 시작**
+3. 다시 띄운다.
+   - **Pi**: `docker compose up -d`
+   - **NAS**: 프로젝트 → 시작
 4. `https://draw.863ad.co.kr/api/health` 가 `{"ok":true,...}` 인지 확인하고 로그인해 본다.
 
 > 백업 파일은 `VACUUM INTO` 산출물이라 **WAL 파일이 필요 없다**. `app.db` 하나만 놓으면 된다.
@@ -171,8 +209,56 @@ chown -R 1000:1000 files
 
 ## 4. 업데이트
 
+어느 대상이든 순서는 같다: **백업 → 이미지 교체 → 시작 → 확인**.
+
+### 4-1. 라즈베리파이4
+
+Pi 에서 직접 빌드하는 경우(RAM 4GB 이상):
+
+```bash
+cd ~/whiteboard
+git pull
+cd deploy/pi
+
+./backup-to-nas.sh                                   # ★ 먼저 백업
+docker compose -f docker-compose.yml -f docker-compose.build.yml build
+docker compose up -d                                 # 바뀐 컨테이너만 다시 만든다
+docker compose ps
+curl -s https://draw.863ad.co.kr/api/health
+```
+
+PC 에서 크로스 빌드해 가져오는 경우:
+
+```bash
+# PC
+./build-arm64.sh
+scp dist-images/whiteboard-*-<TAG>.tar pi@<Pi주소>:~/
+
+# Pi
+cd ~/whiteboard/deploy/pi
+./backup-to-nas.sh                                   # ★ 먼저 백업
+docker load -i ~/whiteboard-app-<TAG>.tar
+docker load -i ~/whiteboard-room-<TAG>.tar
+vi .env                                              # APP_TAG / ROOM_TAG 를 <TAG> 로
+docker compose up -d
+```
+
+Caddy 만 고쳤을 때(호스트명 추가 등)는 앱을 건드리지 않는다:
+
+```bash
+docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile
+docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile   # 무중단
+```
+
+백업 타이머가 살아 있는지도 가끔 본다: `systemctl list-timers whiteboard-backup.timer`.
+
+오래된 이미지 정리: `docker image prune -f` (쓰이지 않는 것만 지운다).
+
+### 4-2. DS118 NAS
+
 1. PC 에서 최신 코드를 받고 `./build-arm64.sh` 를 다시 돌린다 → 새 태그의 tar 두 개.
 2. tar 를 NAS 에 올리고 **Container Manager → 이미지 → 추가 → 파일에서 추가**.
+   (tar 에는 `ds118-whiteboard-*` 태그가 함께 들어 있어 기존 프로젝트가 그대로 동작한다.)
 3. **먼저 백업한다** (3-1 을 한 번 호출).
 4. `docker/whiteboard/.env` 의 `APP_TAG` / `ROOM_TAG` 를 새 태그로 바꾼다.
 5. **Container Manager → 프로젝트 → whiteboard → 빌드**(또는 중지 후 시작).
@@ -192,6 +278,20 @@ chown -R 1000:1000 files
 ---
 
 ## 5. 로그 보기
+
+**라즈베리파이4**
+
+```bash
+cd ~/whiteboard/deploy/pi
+docker compose logs --tail 100 app          # 앱 (pino JSON 한 줄)
+docker compose logs --tail 100 room caddy   # 릴레이 · 리버스 프록시
+docker compose logs -f app                  # 실시간
+journalctl -u whiteboard-backup -n 50       # 백업 결과
+```
+
+Caddy 로그에서 인증서 문제를 볼 때: `docker compose logs caddy | grep -i -E "certificate|obtain|error"`.
+
+**DS118 NAS**
 
 - **Container Manager → 컨테이너 → `whiteboard-app` → 세부 정보 → 로그**
   로그는 JSON 한 줄(pino) 형식이다. 봐야 할 것:
@@ -227,16 +327,20 @@ chown -R 1000:1000 files
 세션 쿠키가 브라우저에 저장되지 않는 것이다.
 
 1. 주소가 **`https://`** 인가? `COOKIE_SECURE=true` 면 HTTP 로는 쿠키가 붙지 않는다.
-2. 리버스 프록시에 **`X-Forwarded-Proto: $scheme`** 헤더가 있는가? (SETUP 6-1)
+2. 리버스 프록시가 **`X-Forwarded-Proto`** 를 붙이는가?
+   NAS 는 SETUP 6-1 의 헤더 프리셋, Pi 는 Caddy 가 자동으로 붙인다(설정할 것 없음).
 3. `.env` 의 `PUBLIC_URL` 이 실제 접속 주소와 같은가?
+   Pi 에서는 `TRUST_PROXY` 도 본다 — A안 `1`, B안(Cloudflare Tunnel) `2`.
 4. 그래도 안 되면 브라우저 개발자 도구 → 네트워크 → 로그인 요청의 응답 헤더에서
    `Set-Cookie: sid=...; Secure` 가 오는지 본다.
 
 ### 실시간 협업이 안 된다 (다른 사람 그림이 안 보인다)
 
 - 화면 상단 배지가 **「재연결 중…」** 이면 WebSocket 이 프록시를 못 지나는 것이다.
-  → SETUP 6-1 의 **WebSocket 사용자 지정 헤더 프리셋**이 그 규칙에 붙어 있는지 확인한다.
-  DSM 은 규칙을 편집해 저장할 때 헤더가 사라지는 일이 있으니 다시 열어 확인한다.
+  - **NAS**: SETUP 6-1 의 **WebSocket 사용자 지정 헤더 프리셋**이 그 규칙에 붙어 있는지 확인한다.
+    DSM 은 규칙을 편집해 저장할 때 헤더가 사라지는 일이 있으니 다시 열어 확인한다.
+  - **Pi**: Caddy 는 WebSocket 을 설정 없이 통과시키므로 프록시 설정 문제일 가능성은 낮다.
+    `docker compose logs caddy` 와 `docker compose ps`(app·room 이 Up 인지)를 먼저 본다.
 - 배지는 정상인데 그림만 안 온다면 브라우저 개발자 도구 → 네트워크 → WS 탭에서
   `/socket.io/` 연결이 101 로 올라갔는지 본다.
 
@@ -244,7 +348,8 @@ chown -R 1000:1000 files
 
 app 이 릴레이에 못 붙는 것이다.
 
-1. **Container Manager → 컨테이너**에서 `whiteboard-room` 이 실행 중인가? 다시 시작한다.
+1. `whiteboard-room` 이 실행 중인가? 다시 시작한다.
+   (Pi: `docker compose ps` / `docker compose restart room`, NAS: Container Manager → 컨테이너)
 2. `docker-compose.yml` 의 `ROOM_URL` 이 `http://room:3002` 인가?
    (컨테이너 이름이 아니라 **서비스 이름** `room` 이어야 내부 DNS 가 푼다.)
 3. `https://draw.863ad.co.kr/api/health` 의 `room` 값이 `"down"` 이면 같은 문제다.
@@ -255,18 +360,20 @@ app 이 릴레이에 못 붙는 것이다.
 
 ### 컨테이너가 계속 재시작한다
 
-- **로그 첫 줄이 `SQLITE_CANTOPEN`**: `data/` 폴더 권한이다. SETUP 4-2 의 `chown 1000:1000` 을 실행한다.
+- **로그 첫 줄이 `SQLITE_CANTOPEN`**: `data/` 폴더 권한이다. `sudo chown -R 1000:1000 data`
+  (NAS 는 SETUP 4-2, Pi 는 SETUP-PI 5단계).
 - **로그 없이 죽는다 / `OOMKilled`**: 메모리 상한에 걸렸다.
-  `docker-compose.yml` 의 `mem_limit` 을 올리고(app 384m → 512m) 프로젝트를 다시 시작한다.
-  단, NAS 전체가 1GB 이므로 DSM 몫(약 350~450MB)을 남겨야 한다.
+  `docker-compose.yml` 의 `mem_limit` 을 올리고(app 384m → 512m) 다시 시작한다.
+  이때 `NODE_OPTIONS=--max-old-space-size` 도 함께 올린다(항상 컨테이너 한도보다 낮게).
+  NAS 는 전체가 1GB 이므로 DSM 몫(약 350~450MB)을 남겨야 한다. Pi 는 RAM 이 넉넉하면 여유가 있다.
 - **`ADMIN_PASSWORD` 관련 오류**: `.env` 에 값이 비어 있다. 8자 이상으로 채운다.
 
 ### 첫 로딩이 느리다
 
 - 초기 번들이 크다(Excalidraw + 폰트). **두 번째 접속부터는 브라우저 캐시로 즉시** 뜬다 —
   해시가 붙은 자산은 1년 `immutable` 로 내려간다.
-- 정적 파일은 빌드 때 미리 brotli/gzip 으로 압축해 두고 NAS 는 그대로 흘려보내기만 한다.
-  NAS CPU 는 병목이 아니고, 보통 **가정용 회선의 업로드 대역폭**이 병목이다.
+- 정적 파일은 빌드 때 미리 brotli/gzip 으로 압축해 두고 서버는 그대로 흘려보내기만 한다.
+  NAS/Pi 의 CPU 는 병목이 아니고, 보통 **가정용 회선의 업로드 대역폭**이 병목이다.
 - 시트 페이지는 처음 열 때만 시트 엔진 청크를 따로 받는다(지연 로드).
 
 ### 브라우저 콘솔에 `Refused to load the font 'https://esm.sh/...'` 가 뜬다

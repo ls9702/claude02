@@ -1,6 +1,6 @@
 # DS118 셀프호스팅 실시간 화이트보드 — 전체 스펙 (v3)
 
-> **상태: 1단계 프로토타입(M1~M5) + 통합 디버깅 + M6 배포 산출물 완료 (2026-09-05).** 남은 것은 사용자 PC에서 `build-arm64.sh` 빌드 → DS118 배포(`SETUP.md`)이며, Docker 빌드·NAS 실측은 이 환경에서 할 수 없어 사용자 검증 항목으로 남김. 알려진 제약은 `KNOWN_ISSUES.md`, 운영 절차는 `OPERATIONS.md` 참조.
+> **상태: 1단계 프로토타입(M1~M5) + 통합 디버깅 + M6 배포 산출물 완료 (2026-09-05). 배포 대상을 라즈베리파이4로 전환하고 Pi 산출물 추가 (2026-09-06, §11 결정 이력).** 남은 것은 이미지 빌드(PC 크로스 빌드 또는 Pi 네이티브) → **라즈베리파이4 배포(`deploy/pi/SETUP-PI.md`)**, 대안으로 DS118 배포(`SETUP.md`)이며, Docker 빌드·실장비 실측은 이 환경에서 할 수 없어 사용자 검증 항목으로 남김. 알려진 제약은 `KNOWN_ISSUES.md`, 운영 절차는 `OPERATIONS.md` 참조.
 
 ## Context
 
@@ -10,14 +10,14 @@ Figma처럼 사진·그림·개념도를 그릴 수 있는 웹 기반 실시간 
 
 | 항목 | 결정 |
 |---|---|
-| 하드웨어 | Synology DS118 — Realtek RTD1296 (ARMv8, 쿼드 A53 1.4GHz), RAM 1GB, DSM 7.0.1 → 7.2+ 업데이트 예정 |
+| 하드웨어 | **라즈베리파이4 (주)** — Cortex-A72 ×4 1.5GHz, RAM 2/4/8GB, Raspberry Pi OS Lite **64-bit**(Bookworm) / **DS118 (대안)** — Realtek RTD1296 (ARMv8, 쿼드 A53 1.4GHz), RAM 1GB, DSM 7.2+. 둘 다 linux/arm64 라 **이미지는 동일**하고, 앞단 리버스 프록시만 다르다(Pi=Caddy 컨테이너 / NAS=DSM 내장) |
 | 도메인 | `draw.863ad.co.kr` + HTTPS |
 | 동시 사용자 | 최대 5명 |
 | 캔버스 엔진 | Excalidraw (MIT) — 패키지 임베드 + excalidraw.com 협업 코드 포팅 |
 | 시트 엔진 | Fortune-sheet (MIT) — 수식·서식 지원, `onOp` 훅으로 자체 실시간 동기화 |
 | AI 제공자 | Google Gemini (claude01 프로젝트와 동일 키·설계) |
 | 개발 방식 | Opus 5 구현 → Sonnet 5 병렬 검증 → Opus 5 수정 → Fable 5 최종 검토 |
-| 진행 순서 | **1단계 프로토타입(로컬 PC, M1~M5) 완료 → 2단계 NAS·도메인 설정 및 배포(M6)**. NAS/도메인 작업은 프로토타입이 끝난 뒤 시작 |
+| 진행 순서 | **1단계 프로토타입(로컬 PC, M1~M5) 완료 → 2단계 장비·도메인 설정 및 배포(M6)**. 장비/도메인 작업은 프로토타입이 끝난 뒤 시작 |
 
 ---
 
@@ -28,7 +28,7 @@ Figma처럼 사진·그림·개념도를 그릴 수 있는 웹 기반 실시간 
 | 목적 | 실시간 협업 화이트보드 (손그림·도형·개념도·이미지·댓글·AI 검색 카드) + 엑셀형 시트 페이지(회비 장부 등) |
 | 사용자 모델 | 관리자가 계정 발급·세션 개설·사용자를 세션에 할당. 사용자는 할당된 세션만 접근 |
 | 클라이언트 | 웹 브라우저 (PC/태블릿/모바일, 펜 입력) |
-| 서버 | DS118 Container Manager(도커, 커뮤니티 스크립트로 활성화), arm64 이미지 2개 |
+| 서버 | Pi: Docker 공식 설치(`get.docker.com`) + Caddy 포함 컨테이너 3개 / NAS: DS118 Container Manager(커뮤니티 스크립트로 활성화) + 컨테이너 2개. arm64 이미지는 양쪽 동일 |
 
 ---
 
@@ -163,16 +163,38 @@ Figma처럼 사진·그림·개념도를 그릴 수 있는 웹 기반 실시간 
 
 ## 3. 아키텍처
 
+**배포 대상 A — 라즈베리파이4 (주)**
+
 ```
 [브라우저]
    │ HTTPS (draw.863ad.co.kr)
-   ▼
-[DSM 리버스 프록시]  TLS 종단 (DSM Let's Encrypt 자동 갱신), WebSocket 헤더 프리셋
+   │   A안: 공유기1 의 80·443 → Pi          B안: Cloudflare Tunnel (공유기 변경 없음)
+   ▼                                              │
+[caddy]  TLS 종단 (Let's Encrypt 자동 발급·갱신)   └─> [cloudflared] ─> caddy:80
+   │     WebSocket 자동 통과, X-Forwarded-* 부착        (--profile tunnel)
+   │     (A안) NAS 호스트명은 http://NAS:80 / https://NAS:5001 로 되돌려 준다
+   │
    ├──> [app]  Node.js + Fastify + SQLite                                  (~120MB)
    │      정적 프론트 서빙(사전 압축·장기 캐시), 인증(세션 쿠키),
    │      사용자/세션/페이지/파일/댓글 API, 씬 병합 저장,
    │      댓글 WebSocket, 시트 op 릴레이 WebSocket, Gemini 프록시(/api/ai)
    └──> [excalidraw-room]  캔버스 실시간 릴레이 (무상태, 업스트림 그대로)     (~60MB)
+
+   app·room 은 호스트에 포트를 열지 않는다(도커 내부망 전용).
+   외부에서 보이는 포트는 Caddy 의 80/443 뿐이다.
+
+   백업: 매일 03:00 systemd 타이머 → POST /api/admin/backup → DB 스냅샷 + files/ 를 NAS 로 rsync
+```
+
+**배포 대상 B — DS118 NAS (대안)**
+
+```
+[브라우저]
+   │ HTTPS (draw.863ad.co.kr)
+   ▼
+[DSM 리버스 프록시]  TLS 종단 (DSM Let's Encrypt 자동 갱신), WebSocket 헤더 프리셋
+   ├──> [app]   (위와 동일한 이미지)
+   └──> [excalidraw-room]
 ```
 
 - **컨테이너 2개, 합계 약 180MB** — DSM(300~400MB) 제외 여유 500~600MB 내
@@ -186,22 +208,42 @@ Figma처럼 사진·그림·개념도를 그릴 수 있는 웹 기반 실시간 
 
 ## 4. 네트워크/보안
 
-- `draw.863ad.co.kr` → 집 공인 IP, **443 + 80 포트포워딩** (80은 DSM Let's Encrypt HTTP-01 발급·갱신용)
-- DSM 내장 리버스 프록시가 443 → app 컨테이너로 전달 (WebSocket 프리셋 적용). HTTPS 필수 — wss·클립보드 API가 요구
+- `draw.863ad.co.kr` → 집 공인 IP, **443 + 80 포트포워딩** (80은 Let's Encrypt HTTP-01 발급·갱신용)
+- **Pi(주)**: Caddy 가 443 → app 으로 전달. WebSocket 은 설정 없이 통과한다.
+  집의 443 은 한 장비만 받을 수 있고 지금은 NAS 가 쓰고 있으므로, 노출은 둘 중 하나다 —
+  **A안** 공유기 80/443 을 Pi 로 옮기고 NAS 호스트명은 Caddy 가 NAS 로 패스스루,
+  **B안** Cloudflare Tunnel 로 공유기·NAS 를 전혀 건드리지 않음 (`deploy/pi/SETUP-PI.md` 6단계)
+- **NAS(대안)**: DSM 내장 리버스 프록시가 443 → app 컨테이너로 전달 (WebSocket 프리셋 적용)
+- HTTPS 필수 — wss·클립보드 API가 요구
 - 세션 쿠키: httpOnly + Secure + SameSite=Lax, 로그인 시도 rate limit
 - DSM 관리 포트(5000/5001) 외부 비공개, DSM 방화벽은 443/80만 개방
 - 업로드 크기 제한(백엔드), AI 프록시는 로그인·퓨즈·본문 크기 검사를 업스트림 호출 전에 수행
 
 ---
 
-## 5. NAS·도메인 설정 (2단계 — 프로토타입 완료 후 사용자 수행)
+## 5. 장비·도메인 설정 (2단계 — 프로토타입 완료 후 사용자 수행)
 
 프로토타입(M1~M5)은 로컬 PC의 `docker compose`(또는 `npm run dev`)만으로 개발·검증하며, 아래 작업은 M6 배포 직전에 진행한다.
+
+**라즈베리파이4 (주) — 상세는 `deploy/pi/SETUP-PI.md`**
+
+1. 사전 확인: `uname -m` 이 **`aarch64`**(32비트면 Raspberry Pi OS 64-bit 재설치), RAM·저장장치·IP, 공유기1의 NAS 포트포워딩 목록 캡처
+2. Raspberry Pi OS Lite 64-bit(Bookworm) + SSH + `unattended-upgrades`, 시간대 `Asia/Seoul`
+3. Docker 공식 설치(`curl -fsSL https://get.docker.com | sh`) + `usermod -aG docker`
+4. 공유기1에서 Pi **DHCP 예약**(AiMesh 노드에 붙어 있어도 설정은 공유기1에서 한다 — 노드는 같은 서브넷을 브리지할 뿐이다)
+5. 이미지: PC 크로스 빌드(`build-arm64.sh` → `scp` → `docker load`) 또는 Pi 네이티브 빌드(RAM 4GB+)
+6. `deploy/pi/.env` 작성, `data/` 소유자 1000:1000, `docker compose up -d`
+7. 노출: **A안**(공유기 80/443 → Pi, Caddyfile에 NAS 호스트명 패스스루) 또는 **B안**(Cloudflare Tunnel, 공유기·NAS 무변경) 중 택1
+8. DNS: A안은 A 레코드(또는 공유기 DDNS), B안은 Cloudflare가 CNAME 자동 생성
+9. 백업: NAS에 SSH 키/공유 폴더 준비 → `backup-to-nas.sh` 수동 1회 → systemd 타이머(매일 03:00)
+10. microSD 보호: `data/`를 USB SSD로 이전(선택), 스왑 최소화, 로그 로테이션(compose에 이미 적용)
+
+**DS118 NAS (대안) — 상세는 `SETUP.md`**
 
 1. DSM 7.0.1 → 7.2+ 업데이트 (설정 백업 후)
 2. SSH로 [007revad/ContainerManager_for_all_armv8](https://github.com/007revad/ContainerManager_for_all_armv8) 실행 → Container Manager 설치 (DS118 지원 명시), 패키지 자동 업데이트 제외 설정
 3. `draw.863ad.co.kr` DNS A 레코드 + 공유기 443/80 포트포워딩
-4. DSM 제어판에서 Let's Encrypt 인증서 발급 + 리버스 프록시 규칙 생성 (SETUP.md 가이드 예정)
+4. DSM 제어판에서 Let's Encrypt 인증서 발급 + 리버스 프록시 규칙 생성
 5. `GEMINI_API_KEY`, `ADMIN_PASSWORD` 등 환경변수 준비
 
 ---
@@ -222,10 +264,17 @@ Figma처럼 사진·그림·개념도를 그릴 수 있는 웹 기반 실시간 
 │   └── src/ (auth, sessions, pages, scenes(병합), sheets(op 릴레이·저장), files, comments(WS), ai(Gemini 프록시·퓨즈), static)
 ├── room/                # excalidraw-room arm64 빌드 (업스트림 그대로)
 ├── e2e/                 # Playwright 테스트 (Sonnet 검증 에이전트용, 브라우저 2개 협업 시나리오)
-├── docker-compose.yml   # app + room
-├── build-arm64.sh       # 크로스 빌드 (폰트 복사·사전 압축 포함)
+├── docker-compose.yml   # NAS(DS118): app + room
+├── deploy/pi/           # 라즈베리파이4(주): caddy + app + room
+│   ├── docker-compose.yml / docker-compose.build.yml  # 프로필 tunnel=cloudflared / Pi 네이티브 빌드 오버레이
+│   ├── Caddyfile        # TLS 종단·WebSocket 통과·(A안) NAS 호스트명 패스스루 예시
+│   ├── .env.example     # 앱 + Caddy + 백업 + 터널
+│   ├── backup-to-nas.sh # POST /api/admin/backup → DB 스냅샷·files/ 를 NAS 로 rsync(ssh|mount)
+│   ├── whiteboard-backup.service / .timer  # systemd 매일 03:00
+│   └── SETUP-PI.md      # Pi 배포 가이드 (사전 확인 → OS → 도커 → 노출 A/B → DNS → 검증 → 백업 → SD 보호)
+├── build-arm64.sh       # 크로스 빌드 (폰트 복사·사전 압축 포함, whiteboard-* + ds118-* 태그)
 ├── SETUP.md             # NAS 배포 가이드 (DSM 업데이트 → 도커 → 리버스 프록시·인증서 → 배포)
-└── OPERATIONS.md        # 계정/세션 관리, 백업(VACUUM INTO), 업데이트, AI 키 설정
+└── OPERATIONS.md        # 계정/세션 관리, 백업(VACUUM INTO), 업데이트, AI 키 설정 (Pi/NAS 분기)
 ```
 
 ---
@@ -275,7 +324,9 @@ Figma처럼 사진·그림·개념도를 그릴 수 있는 웹 기반 실시간 
 
 1. **로컬**: `docker compose up` → 브라우저 2개(다른 계정)로 로그인 유지, 세션 할당·차단, 페이지 전환, 동시 편집·이미지 동기화, 댓글 실시간 반영, AI 카드 생성(모킹), 시트 동시 입력·잔액 수식 재계산·xlsx 내보내기 확인
 2. **arm64**: buildx로 arm64 이미지 빌드 성공 + QEMU 기동 스모크 테스트
-3. **NAS**: DS118 배포 후 HTTPS 접속, 재부팅 자동 기동, 5명 동시 편집 중 RAM 800MB 이하 확인
+3. **실장비**: 배포 후 HTTPS 접속, 재부팅 자동 기동, 5명 동시 편집 중 메모리 확인.
+   Pi 는 `docker stats` 로 app 384m·room 144m·caddy 128m 한도 안인지, A안이면 NAS 호스트명 전부 정상인지, B안이면 터널 `HEALTHY` 인지 함께 본다(`deploy/pi/SETUP-PI.md` 8단계 체크리스트).
+   DS118 은 5명 동시 편집 중 RAM 800MB 이하 확인
 4. **백업/복원**: `VACUUM INTO` 사본을 새 볼륨에 복원해 무결성 확인
 
 ---
@@ -308,3 +359,4 @@ Figma처럼 사진·그림·개념도를 그릴 수 있는 웹 기반 실시간 
 | Univer (시트 엔진) | 제외 | 핵심은 Apache-2.0이나 실시간 협업·xlsx 가져오기/내보내기·차트가 유료 Pro |
 | Handsontable / jspreadsheet CE | 제외 | 상용 라이선스 / 무료판 기능 제한 |
 | 장부 전용 테이블(스프레드시트 아님) | 기각 | 가볍지만 "엑셀 기능" 요구를 못 채움 → 범용 시트 + 장부 템플릿으로 양쪽 충족 |
+| 배포 대상을 DS118 로 유지 | **변경(2026-09-06)** | 집에 있는 라즈베리파이4 로 옮긴다 — CPU 가 A53 1.4GHz → **A72 1.5GHz**(코어당 2~3배), RAM 1GB → 2GB 이상, 도커가 **공식 지원**(DSM 업데이트 때 커뮤니티 스크립트로 재설치할 위험이 사라짐), NAS 는 claude01(여행 앱)을 돌린 채 그대로 둔다. DSM 리버스 프록시가 없어지는 자리는 **Caddy 컨테이너**가 대신하고(자동 Let's Encrypt·WebSocket 기본 통과), 유일한 걸림돌인 **80/443 충돌**은 Caddy 가 NAS 호스트명을 NAS 로 되돌려 주거나(A안) Cloudflare Tunnel(B안)로 푼다. 이미지·Dockerfile 은 둘 다 linux/arm64 라 그대로 쓴다. DS118 은 대안으로 남긴다 |

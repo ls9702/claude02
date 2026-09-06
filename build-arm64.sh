@@ -1,17 +1,35 @@
 #!/usr/bin/env bash
 #
-# DS118(arm64) 용 이미지 크로스 빌드 — **사용자 PC 에서** 실행한다.
+# arm64 이미지 크로스 빌드 — **사용자 PC 에서** 실행한다.
+# 배포 대상 두 곳(라즈베리파이4·DS118 NAS)이 모두 linux/arm64 라 같은 이미지를 쓴다.
 #
 #   ./build-arm64.sh              # 두 이미지 모두 빌드 + tar 로 저장
 #   ./build-arm64.sh app          # app 만
 #   ./build-arm64.sh room         # room 만
 #   TAG=2026-09-05 ./build-arm64.sh
 #
-# 산출물: dist-images/ds118-whiteboard-app-<TAG>.tar, ...-room-<TAG>.tar
-# 이 tar 를 File Station 으로 NAS 에 올리고 Container Manager 의
-# 「이미지 → 추가 → 파일에서 추가」로 불러온다 (SETUP.md 3~4단계).
+# 산출물: dist-images/whiteboard-app-<TAG>.tar, dist-images/whiteboard-room-<TAG>.tar
+#   - Pi  : scp 로 Pi 에 옮기고 `docker load -i <tar>` (deploy/pi/SETUP-PI.md 4단계)
+#   - NAS : File Station 으로 올리고 Container Manager 의
+#           「이미지 → 추가 → 파일에서 추가」로 불러온다 (SETUP.md 3~4단계)
 #
-# NAS 는 1GB RAM 짜리 ARM 장비라 거기서 빌드하지 않는다. PC 에서 QEMU 로 크로스 빌드한다.
+# 이미지 이름은 `whiteboard-app` / `whiteboard-room` 이다.
+# 예전 NAS 문서·프로젝트가 쓰던 `ds118-whiteboard-*` 태그도 **같이** 찍어 두므로
+# 기존 NAS 배포는 그대로 동작한다.
+#
+# ---- Pi 에서 직접 빌드하기 (이 스크립트가 필요 없는 경우) -------------------
+# Pi 의 RAM 이 4GB 이상이면 크로스 빌드 대신 Pi 에서 그냥 빌드하는 편이 간단하다
+# (네이티브라 QEMU 가 필요 없고 10~20분쯤 걸린다):
+#
+#   git clone <저장소> ~/whiteboard && cd ~/whiteboard/deploy/pi
+#   cp .env.example .env && vi .env
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml build
+#   docker compose up -d
+#
+# RAM 2GB Pi 에서는 better-sqlite3 컴파일에서 메모리가 모자랄 수 있으므로
+# 이 스크립트로 PC 에서 크로스 빌드하는 쪽을 권한다.
+#
+# NAS(DS118)는 1GB RAM 이라 거기서는 빌드하지 않는다 — 반드시 PC 크로스 빌드.
 
 set -euo pipefail
 
@@ -22,8 +40,13 @@ PLATFORM="linux/arm64"
 OUT_DIR="${OUT_DIR:-dist-images}"
 BUILDER_NAME="${BUILDER_NAME:-ds118-arm64}"
 
-APP_IMAGE="ds118-whiteboard-app"
-ROOM_IMAGE="ds118-whiteboard-room"
+APP_IMAGE="whiteboard-app"
+ROOM_IMAGE="whiteboard-room"
+
+# 예전 이름 — NAS 용 docker-compose.yml 과 SETUP.md 가 이 이름을 참조한다.
+# 같은 이미지에 태그만 하나 더 붙이는 것이라 용량은 늘지 않는다.
+LEGACY_APP_IMAGE="ds118-whiteboard-app"
+LEGACY_ROOM_IMAGE="ds118-whiteboard-room"
 
 # 태그: <git short sha>-<YYYYMMDD>. 저장소가 아니면 날짜만 쓴다.
 default_tag() {
@@ -89,15 +112,19 @@ mkdir -p "$OUT_DIR"
 # ---- 빌드 --------------------------------------------------------------------
 
 build_one() {
-  local name="$1" image="$2" dockerfile="$3"
+  local name="$1" image="$2" dockerfile="$3" legacy="$4"
   local ref="${image}:${TAG}"
   info "빌드 시작: ${ref}  (${PLATFORM}, -f ${dockerfile})"
 
   # --load 는 결과를 로컬 도커에 넣는다. 크로스 빌드라 캐시가 없으면 10~30분 걸릴 수 있다.
+  # -t 를 네 번 준다 — 새 이름(whiteboard-*)과 예전 이름(ds118-whiteboard-*) 각각의
+  # <TAG> 와 latest. 이미지는 하나고 이름표만 넷이다.
   if ! docker buildx build \
         --platform "$PLATFORM" \
         -t "$ref" \
         -t "${image}:latest" \
+        -t "${legacy}:${TAG}" \
+        -t "${legacy}:latest" \
         -f "$dockerfile" \
         --load \
         . ; then
@@ -120,7 +147,9 @@ HINT
 
   local tar="${OUT_DIR}/${image}-${TAG}.tar"
   info "저장: ${tar}"
-  docker save -o "$tar" "$ref"
+  # 네 이름표를 모두 담는다 — 같은 이미지 하나라 tar 크기는 늘지 않고,
+  # Pi 든 NAS 든 `docker load` 한 번으로 새 이름·예전 이름이 모두 생긴다.
+  docker save -o "$tar" "$ref" "${image}:latest" "${legacy}:${TAG}" "${legacy}:latest"
 
   local size
   size="$(du -h "$tar" | cut -f1)"
@@ -130,8 +159,10 @@ HINT
 built=()
 for target in "${TARGETS[@]}"; do
   case "$target" in
-    app)  build_one app  "$APP_IMAGE"  backend/Dockerfile; built+=("$APP_IMAGE:$TAG") ;;
-    room) build_one room "$ROOM_IMAGE" room/Dockerfile;    built+=("$ROOM_IMAGE:$TAG") ;;
+    app)  build_one app  "$APP_IMAGE"  backend/Dockerfile "$LEGACY_APP_IMAGE"
+          built+=("$APP_IMAGE:$TAG" "$LEGACY_APP_IMAGE:$TAG") ;;
+    room) build_one room "$ROOM_IMAGE" room/Dockerfile "$LEGACY_ROOM_IMAGE"
+          built+=("$ROOM_IMAGE:$TAG" "$LEGACY_ROOM_IMAGE:$TAG") ;;
     *)    fail "알 수 없는 대상: ${target} (app 또는 room)" ;;
   esac
 done
@@ -141,14 +172,26 @@ info "빌드한 이미지:"
 for ref in "${built[@]}"; do
   printf '  %s\n' "$ref"
 done
-docker image ls --filter "reference=ds118-whiteboard-*:${TAG}" \
+docker image ls --filter "reference=*whiteboard-*:${TAG}" \
   --format '  {{.Repository}}:{{.Tag}}  {{.Size}}' || true
 
 cat <<EOF
 
-다음 단계 (SETUP.md 3~4단계):
+다음 단계 — 라즈베리파이4 (deploy/pi/SETUP-PI.md 4단계):
+  1. tar 두 개를 Pi 로 옮긴다:
+       scp ${OUT_DIR}/whiteboard-*-${TAG}.tar pi@<Pi주소>:~/
+  2. Pi 에서 불러온다:
+       docker load -i ~/whiteboard-app-${TAG}.tar
+       docker load -i ~/whiteboard-room-${TAG}.tar
+  3. deploy/pi/.env 에서 태그를 맞춘다:
+       APP_TAG=${TAG}
+       ROOM_TAG=${TAG}
+  4. docker compose up -d
+
+다음 단계 — DS118 NAS (SETUP.md 3~4단계):
   1. ${OUT_DIR}/ 의 tar 파일을 File Station 으로 NAS 에 올린다.
   2. Container Manager → 이미지 → 추가 → 「파일에서 추가」로 두 tar 를 불러온다.
+     (tar 안에는 ds118-whiteboard-* 태그도 함께 들어 있다.)
   3. NAS 의 프로젝트 폴더 .env 에서 태그를 맞춘다:
        APP_TAG=${TAG}
        ROOM_TAG=${TAG}

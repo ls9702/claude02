@@ -1,0 +1,49 @@
+# 화이트보드 → NAS 백업 (1회 실행). 일정은 whiteboard-backup.timer 가 잡는다.
+#
+# 설치 (SETUP-PI.md 9단계):
+#   sudo cp whiteboard-backup.service whiteboard-backup.timer /etc/systemd/system/
+#   sudo vi /etc/systemd/system/whiteboard-backup.service   # User/WorkingDirectory 를 실제 값으로
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now whiteboard-backup.timer
+#
+# 지금 바로 한 번 돌려 보기:  sudo systemctl start whiteboard-backup.service
+# 결과 보기:                 journalctl -u whiteboard-backup -n 50 --no-pager
+# 다음 실행 시각:            systemctl list-timers whiteboard-backup.timer
+
+[Unit]
+Description=Whiteboard backup to NAS (DB snapshot + uploaded files)
+Documentation=file:///home/pi/whiteboard/deploy/pi/SETUP-PI.md
+# 앱 컨테이너가 떠 있어야 백업 API 를 부를 수 있다.
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+# ↓↓↓ 실제 환경에 맞게 고칠 두 줄 ↓↓↓
+# .env 를 읽고 docker 볼륨(data/)에 접근해야 하므로, deploy/pi 를 소유한 사용자로 돌린다.
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/whiteboard/deploy/pi
+ExecStart=/home/pi/whiteboard/deploy/pi/backup-to-nas.sh
+# ↑↑↑ 여기까지 ↑↑↑
+
+# Type=oneshot 에는 Restart= 를 쓸 수 없다(systemd 가 거부한다).
+# 한 번 실패하면 다음 날 타이머가 다시 돈다. 바로 다시 돌리려면:
+#   sudo systemctl start whiteboard-backup.service
+#
+# rsync·ssh 가 늦어져도 무한정 붙들지 않는다.
+TimeoutStartSec=30min
+
+# 로그는 journal 로 간다 (journalctl -u whiteboard-backup).
+StandardOutput=journal
+StandardError=journal
+
+# 소소한 보호막. ProtectHome 은 켜지 않는다 — ssh 가 ~/.ssh/known_hosts 에
+# 호스트 키를 적어야 하고, BACKUP_MODE=mount 목적지가 홈 아래일 수도 있다.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

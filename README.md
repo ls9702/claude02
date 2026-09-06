@@ -3,8 +3,9 @@
 Excalidraw 를 임베드한 자체 호스팅 화이트보드. 관리자가 계정과 세션(보드)을 만들고 사용자를 할당하면,
 사용자는 자신에게 할당된 세션의 페이지(그림판 / 시트)를 열어 함께 작업한다.
 
-전체 스펙은 [`PLAN.md`](./PLAN.md) 참고. 현재 구현 단계는 **M6 — NAS 배포 산출물(컨테이너 · compose · 문서)**.
-배포는 [`SETUP.md`](./SETUP.md), 운영은 [`OPERATIONS.md`](./OPERATIONS.md).
+전체 스펙은 [`PLAN.md`](./PLAN.md) 참고. 현재 구현 단계는 **M6 — 배포 산출물(컨테이너 · compose · 문서)**.
+배포 대상은 **라즈베리파이4([`deploy/pi/SETUP-PI.md`](./deploy/pi/SETUP-PI.md), 주)** 또는
+**DS118 NAS([`SETUP.md`](./SETUP.md), 대안)**, 운영은 [`OPERATIONS.md`](./OPERATIONS.md).
 
 ## 저장소 구조
 
@@ -17,7 +18,15 @@ room/                  excalidraw-room 릴레이 (업스트림 벤더링, MIT �
 e2e/                   Playwright 시나리오 테스트
   tests/               dev 모드 E2E (`npm run e2e`)
   prod-tests/          프로덕션 모드 스모크 (`npm run e2e:prod`)
-docker-compose.yml     NAS 배포 (app + room)
+docker-compose.yml     NAS(DS118) 배포 (app + room)
+deploy/pi/             라즈베리파이4 배포 (caddy + app + room)
+  docker-compose.yml   Caddy 포함. 선택 프로필 `tunnel` 로 cloudflared 추가
+  docker-compose.build.yml  Pi 에서 직접 빌드할 때 겹쳐 쓰는 오버레이
+  Caddyfile            TLS 종단 · WebSocket 통과 · (A안) NAS 호스트명 패스스루 예시
+  .env.example         Pi 용 환경변수 (앱 + Caddy + 백업 + 터널)
+  backup-to-nas.sh     DB 스냅샷 + 업로드 파일을 NAS 로 (ssh rsync 또는 마운트)
+  whiteboard-backup.*  systemd service/timer (매일 03:00)
+  SETUP-PI.md          Pi 배포 가이드
 build-arm64.sh         PC 에서 arm64 크로스 빌드 → dist-images/*.tar
 SETUP.md               NAS 배포 가이드 (DSM · 리버스 프록시 · 인증서)
 OPERATIONS.md          운영 안내서 (계정 · 백업 · 업데이트 · 문제 해결)
@@ -274,12 +283,42 @@ Chromium 은 `PLAYWRIGHT_BROWSERS_PATH` 에 미리 설치된 것을 사용한다
 
 ## 배포 (M6)
 
-NAS(Synology DS118 · DSM 7.2 · arm64 · RAM 1GB)에 컨테이너 두 개로 올린다.
-자세한 절차는 **[SETUP.md](./SETUP.md)**, 운영은 **[OPERATIONS.md](./OPERATIONS.md)** 를 본다.
+배포 대상은 둘 중 하나를 고른다. **앱 코드와 이미지는 완전히 같다**(둘 다 linux/arm64) —
+다른 것은 앞단의 리버스 프록시뿐이다.
+
+| 대상 | 가이드 | 리버스 프록시 | 비고 |
+|---|---|---|---|
+| **라즈베리파이4 (주)** | **[deploy/pi/SETUP-PI.md](./deploy/pi/SETUP-PI.md)** | **Caddy 컨테이너**(자동 Let's Encrypt) | A72·RAM 2GB+, 도커 공식 지원 |
+| Synology DS118 (대안) | [SETUP.md](./SETUP.md) | DSM 내장 리버스 프록시 | A53·RAM 1GB |
+
+운영(계정·백업·업데이트·문제 해결)은 두 대상 모두 **[OPERATIONS.md](./OPERATIONS.md)** 를 본다.
 
 ```bash
 ./build-arm64.sh        # PC 에서 arm64 크로스 빌드 → dist-images/*.tar
+                        # 이미지 이름: whiteboard-app / whiteboard-room
+                        # (예전 ds118-whiteboard-* 태그도 함께 찍어 NAS 배포와 호환)
 ```
+
+Pi 는 RAM 4GB 이상이면 크로스 빌드 없이 그 자리에서 빌드해도 된다:
+
+```bash
+cd deploy/pi && docker compose -f docker-compose.yml -f docker-compose.build.yml build
+```
+
+**라즈베리파이4** — Caddy 가 TLS 종단과 WebSocket 통과를 맡는다.
+app·room 은 호스트에 포트를 열지 않고 도커 내부망에만 있다.
+
+```
+[브라우저] ──HTTPS(443)──> [caddy]  자동 인증서 · WebSocket 통과 · X-Forwarded-*
+                             ├──> [app :3001]  SPA·API·WS·백업
+                             └──> [room :3002] 협업 릴레이 (app 의 /socket.io 프록시 경유)
+```
+
+집의 443 을 NAS 가 이미 쓰고 있으므로 노출은 둘 중 하나를 고른다(SETUP-PI.md 6단계).
+**A안** 공유기 80/443 을 Pi 로 옮기고 NAS 호스트명은 Caddy 가 NAS 로 되돌려 준다 ·
+**B안** Cloudflare Tunnel(`--profile tunnel`)로 공유기·NAS 를 전혀 건드리지 않는다.
+
+**DS118 NAS**
 
 ```
 [브라우저] ──HTTPS──> [DSM 리버스 프록시] ──HTTP──> [app :3001] ──내부망──> [room :3002]
@@ -299,7 +338,8 @@ NAS(Synology DS118 · DSM 7.2 · arm64 · RAM 1GB)에 컨테이너 두 개로 �
 - **정상 종료**: SIGTERM 을 받으면 새 연결을 막고 WebSocket 을 닫은 뒤 SQLite 를 닫는다(WAL 체크포인트).
   room 도 같은 처리를 한다.
 - **백업**: `POST /api/admin/backup` → `VACUUM INTO data/backup/app-<ts>.db`, 최신 7개 유지.
-  DSM 작업 스케줄러에서 curl 로 부르는 예시가 OPERATIONS.md 에 있다.
+  NAS 는 DSM 작업 스케줄러(OPERATIONS.md 3-2), Pi 는 `deploy/pi/backup-to-nas.sh` +
+  systemd 타이머(매일 03:00)로 NAS 에 밀어 넣는다.
 - **헬스**: `GET /api/health` → `{ok, db, room, uptime, version}`.
   릴레이가 죽어도 `ok` 는 참이다 — app 은 저장·댓글·시트·AI 를 계속 처리할 수 있고,
   여기서 unhealthy 로 떨어뜨리면 도커가 멀쩡한 app 을 재시작해 오히려 서비스가 끊긴다.
